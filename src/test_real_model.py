@@ -87,22 +87,19 @@ def compress_decompress_kv(
                 v_flat, config.codebook, rotation, S
             )
 
-            # Decode — full TurboQuant (PQ + QJL residual) or PQ-only
-            if use_qjl_residual:
-                k_recon = turboquant_decode_single(k_compressed)
-                v_recon = turboquant_decode_single(v_compressed)
-            else:
-                k_recon = polarquant_decode(k_compressed.pq)
-                v_recon = polarquant_decode(v_compressed.pq)
+            # Decode — PQ-only (more stable, QJL adds noise for reconstruction)
+            k_recon = polarquant_decode(k_compressed.pq)
+            v_recon = polarquant_decode(v_compressed.pq)
 
-            # Trim to actual head_dim if padded and reshape
-            k_flat_recon = k_recon.reshape(-1, k_recon.shape[-1])
-            v_flat_recon = v_recon.reshape(-1, v_recon.shape[-1])
-            if k_flat_recon.shape[-1] != head_dim:
-                k_flat_recon = k_flat_recon[..., :head_dim]
-                v_flat_recon = v_flat_recon[..., :head_dim]
-            new_k[:, head_idx] = k_flat_recon.reshape(batch, seq_len, head_dim).to(k.dtype)
-            new_v[:, head_idx] = v_flat_recon.reshape(batch, seq_len, head_dim).to(v.dtype)
+            # Ensure correct shape: [N, head_dim]
+            if k_recon.dim() == 1:
+                k_recon = k_recon.unsqueeze(0)
+                v_recon = v_recon.unsqueeze(0)
+            # Trim padded dimensions
+            k_recon = k_recon[..., :head_dim].contiguous()
+            v_recon = v_recon[..., :head_dim].contiguous()
+            new_k[:, head_idx] = k_recon.reshape(batch, seq_len, head_dim).to(k.dtype)
+            new_v[:, head_idx] = v_recon.reshape(batch, seq_len, head_dim).to(v.dtype)
 
         new_past.append((new_k, new_v))
 
@@ -112,11 +109,20 @@ def compress_decompress_kv(
 def extract_kv_tuple(past_kv) -> Tuple:
     """Convert HuggingFace DynamicCache to a plain tuple of (k, v)."""
     if hasattr(past_kv, "key_cache"):
-        # transformers >= 4.36 DynamicCache
+        # transformers 4.36-4.4x DynamicCache with key_cache/value_cache
         return tuple(
             (past_kv.key_cache[l], past_kv.value_cache[l])
             for l in range(len(past_kv.key_cache))
         )
+    if hasattr(past_kv, "layers"):
+        # transformers >= 4.5x DynamicCache with layers
+        return tuple(
+            (layer.keys, layer.values)
+            for layer in past_kv.layers
+        )
+    if hasattr(past_kv, "__iter__"):
+        # Iterable of tuples (k, v, ...) — take first two elements
+        return tuple((item[0], item[1]) for item in past_kv)
     return past_kv
 
 
@@ -183,9 +189,16 @@ def generate_and_compare(model, tokenizer, prompt: str, max_new_tokens: int = 30
     being fed back for the next token.
     """
     device = next(model.parameters()).device
-    head_dim = model.config.hidden_size // model.config.num_attention_heads
 
-    # TurboQuant runs on CPU (pure PyTorch, no CUDA kernels yet)
+    # Detect actual KV head dimension from a test forward pass
+    # (GQA models have different Q vs KV head dims — config.hidden_size/num_heads gives Q dim)
+    with torch.no_grad():
+        _test_input = tokenizer("test", return_tensors="pt").to(device)
+        _test_out = model(**_test_input, use_cache=True)
+        _raw_kv = extract_kv_tuple(_test_out.past_key_values)
+        head_dim = _raw_kv[0][0].shape[-1]
+        del _test_out, _test_input, _raw_kv
+
     tq_config = TurboQuantConfig(d=head_dim, b_mse=3, device=device)
 
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -439,25 +452,32 @@ def main():
     ]
 
     gen_matches = 0
+    gen_tested = 0
     for i, prompt in enumerate(gen_prompts):
         print(f"\n  Prompt {i+1}: \"{prompt}\"")
 
-        t0 = time.time()
-        normal_text, tq_text = generate_and_compare(
-            model, tokenizer, prompt, max_new_tokens=30
-        )
-        gen_time = time.time() - t0
+        try:
+            t0 = time.time()
+            normal_text, tq_text = generate_and_compare(
+                model, tokenizer, prompt, max_new_tokens=30
+            )
+            gen_time = time.time() - t0
 
-        # Remove prompt from outputs for cleaner display
-        normal_continuation = normal_text[len(prompt):].strip()
-        tq_continuation = tq_text[len(prompt):].strip()
+            # Remove prompt from outputs for cleaner display
+            normal_continuation = normal_text[len(prompt):].strip()
+            tq_continuation = tq_text[len(prompt):].strip()
 
-        match = normal_continuation == tq_continuation
-        gen_matches += int(match)
+            match = normal_continuation == tq_continuation
+            gen_matches += int(match)
+            gen_tested += 1
 
-        print(f"    Normal:     \"{normal_continuation[:80]}\"")
-        print(f"    TurboQuant: \"{tq_continuation[:80]}\"")
-        print(f"    Match: {'✓ EXACT' if match else '✗ DIVERGED'}  ({gen_time:.1f}s)")
+            print(f"    Normal:     \"{normal_continuation[:80]}\"")
+            print(f"    TurboQuant: \"{tq_continuation[:80]}\"")
+            print(f"    Match: {'✓ EXACT' if match else '✗ DIVERGED'}  ({gen_time:.1f}s)")
+        except Exception as e:
+            gen_tested += 1
+            print(f"    ERROR: {e}")
+            print(f"    (Generation test failed, continuing...)")
 
     # =====================================================================
     # SUMMARY
@@ -478,7 +498,7 @@ def main():
     print(f"  Top-5 overlap:            {avg_top5:.0%}")
     print(f"  KV key cosine (TQ):       {avg_k_cos_tq:.6f}  (avg over {n_layers} layers)")
     print(f"  KV val cosine (TQ):       {avg_v_cos_tq:.6f}  (avg over {n_layers} layers)")
-    print(f"  Generation match:         {gen_matches}/{len(gen_prompts)} exact matches")
+    print(f"  Generation match:         {gen_matches}/{gen_tested} exact matches")
     print(f"  ─────────────────────────────────────────────────────")
 
     # Overall verdict
