@@ -14,6 +14,8 @@
 
 ### 📄 Paper Results (Llama-3.1-8B-Instruct, LongBench — from [the paper](https://arxiv.org/abs/2504.19874))
 
+![KV Cache Compression Quality Comparison](assets/comparison_chart.png)
+
 | Method | KV Bits | LongBench Avg | Needle-in-Haystack |
 |--------|---------|---------------|-------------------|
 | Full Precision | 16 | 50.06 | 0.997 |
