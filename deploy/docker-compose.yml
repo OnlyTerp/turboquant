@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  terpbot-tq:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - VLLM_ATTENTION_BACKEND=turboquant
+    command: >
+      --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+      --max-model-len 32768
+      --gpu-memory-utilization 0.90
+      --enforce-eager
+      --trust-remote-code
+      --port 8000
+      --served-model-name terpbot-pro
+      --chat-template chatml
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    shm_size: "10g"
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
