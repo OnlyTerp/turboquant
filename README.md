@@ -32,7 +32,9 @@
 | **3.5-bit** (default) | **0.963** | **80% (4/5)** | **0.992** | **0.988** | **4.9×** |
 | 2.5-bit | 0.956 | 80% (4/5) | 0.973 | 0.961 | 7.1× |
 
-Both modes use **two independent rotations** for outlier/regular channel subsets (Section 2.3 of the paper) and **online codebooks** computed from actual data (Section 4.1).
+Both modes use **two independent rotations** for outlier/regular channel subsets (Section 2.3) and **online codebooks** from actual data (Section 4.1).
+
+**Rotation modes:** `rotation_mode="hadamard"` (default, O(d log d)) or `rotation_mode="dense"` (full random orthogonal via QR decomposition, O(d²)). Both satisfy P^T P = I exactly.
 
 ## How It Works
 

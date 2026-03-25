@@ -18,14 +18,27 @@ This implementation follows **TurboQuant (arxiv 2504.19874)**, not PolarQuant (a
 
 ## Random Rotation
 
-We use the **Randomized Hadamard Transform** as the rotation matrix Π:
+We provide **two rotation modes**, both satisfying the paper's requirement that P^T P = I:
+
+### `rotation_mode="hadamard"` (default)
+Randomized Hadamard Transform: Π = (1/√d) · H · D_signs
 1. Random sign flip: multiply each coordinate by ±1 (deterministic from seed)
 2. Fast Walsh-Hadamard Transform (FWHT): O(d log d) complexity
 3. Scale by 1/√d
 
-This is a practical approximation of the paper's random rotation matrix. The paper notes that any rotation satisfying P^T P = I works. The Hadamard approach is O(d log d) instead of O(d²) for a dense random matrix.
+This is the practical O(d log d) variant. Requires power-of-2 dimension (we pad if needed).
 
-After rotation, each coordinate of Π·x follows a Beta distribution that converges to N(0, 1/d) for d ≥ 64 (Lemma 1). Critically, distinct coordinates become **near-independent** in high dimensions, which is why scalar quantization per coordinate is near-optimal.
+### `rotation_mode="dense"`
+Full random orthogonal matrix via QR decomposition of a Gaussian random matrix:
+1. Generate A with i.i.d. N(0,1) entries
+2. QR factorize: A = QR
+3. Fix sign ambiguity for uniform Haar measure: Q ← Q · diag(sign(diag(R)))
+4. Use Q as P
+
+This is the theoretically exact approach — a uniformly random orthogonal matrix from the Haar measure on O(d). O(d²) storage and O(d²) per vector, but no padding needed.
+
+### Why both?
+The paper describes a general random orthogonal P and notes the Hadamard approach as a practical implementation. Both produce equivalent statistical properties: after rotation, each coordinate follows a Beta distribution converging to N(0, 1/d) for d ≥ 64 (Lemma 1), and distinct coordinates become **near-independent** in high dimensions. The dense mode is mathematically equivalent but slower; the Hadamard mode is the standard choice for production.
 
 ## Lloyd-Max Codebook
 
@@ -55,7 +68,15 @@ The paper's 2.5-bit and 3.5-bit modes (Table 1) allocate more bits to outlier ch
 
 **Paper approach (Section 2.3):** Split channels into outlier/regular sets, apply two **independent** TurboQuant instances with separate rotations and codebooks to each subset.
 
-**Our approximation:** We apply a single rotation over all dimensions, then detect high-variance channels post-rotation and assign different codebook bit budgets. This provides some benefit from residual variance inhomogeneity in the Hadamard approximation, but is not the theoretically optimal two-independent-instances approach described in the paper. The full paper approach requires separate Hadamard matrices for each subset, which we plan to implement in a future version.
+**Our implementation:** We follow the paper's approach exactly:
+1. Detect outlier channels by **original-space variance** (before rotation) — the top-k highest variance channels are outliers
+2. Split the input vector into outlier and regular subsets
+3. Apply **separate random rotations** (with independent seeds) to each subset
+4. Quantize each subset with its own codebook at its own bit width
+5. Store norms separately for each subset
+6. On decode: dequantize each subset with its own codebook, apply inverse rotation, reassemble
+
+This avoids the approximation of using a single rotation with post-rotation variance detection, which was our earlier approach. The two-independent-rotations method is the theoretically optimal approach described in the paper.
 
 ## QJL Score Weight
 

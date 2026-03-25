@@ -103,10 +103,45 @@ def _next_power_of_two(n: int) -> int:
     return p
 
 
+class RandomOrthogonalRotation:
+    """Dense random orthogonal rotation via QR decomposition.
+
+    Generates a full random orthogonal matrix P (P^T P = I) from a
+    Gaussian random matrix using QR factorization. This is the
+    theoretically exact approach described in the paper.
+
+    O(d²) storage and O(d²) per vector — use RandomHadamardRotation
+    for the O(d log d) practical variant.
+    """
+
+    def __init__(self, d: int, seed: int, device: torch.device = torch.device("cpu")):
+        self.d = d
+        self.seed = seed
+        g = torch.Generator(device='cpu')
+        g.manual_seed(seed)
+        A = torch.randn(d, d, generator=g)
+        Q, R = torch.linalg.qr(A)
+        # Ensure uniform Haar measure: fix sign ambiguity of QR
+        diag_sign = torch.sign(torch.diag(R))
+        diag_sign[diag_sign == 0] = 1.0
+        Q = Q * diag_sign.unsqueeze(0)
+        self.P = Q.to(device)  # [d, d] orthogonal matrix
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply random rotation: P · x."""
+        P = self.P.to(device=x.device, dtype=x.dtype)
+        return x @ P.T
+
+    def inverse(self, y: torch.Tensor) -> torch.Tensor:
+        """Apply inverse rotation: P^T · y  (P is orthogonal so P^{-1} = P^T)."""
+        P = self.P.to(device=y.device, dtype=y.dtype)
+        return y @ P
+
+
 class RandomHadamardRotation:
     """Randomized Hadamard Transform: Π·x = (1/√d) · H · (D_signs ⊙ x).
 
-    Implements the random rotation from Algorithm 1 of TurboQuant.
+    O(d log d) practical variant of random orthogonal rotation.
     After rotation, each coordinate follows Beta ≈ N(0, 1/d) (Lemma 1).
 
     The paper notes: "For our implementation, we use random rotation matrices
@@ -635,11 +670,18 @@ class TurboQuantConfig:
         n_outlier: int = N_OUTLIER_CHANNELS,
         b_outlier: Optional[int] = None,
         use_online_codebook: bool = False,
+        rotation_mode: str = "hadamard",
     ):
+        """
+        Args:
+            rotation_mode: "hadamard" (default, O(d log d)) or "dense" (full
+                random orthogonal via QR, O(d²)). Both satisfy P^T P = I.
+        """
         self.d = d
         self.d_padded = _next_power_of_two(d)
         self.b_mse = b_mse
         self.device = device
+        self.rotation_mode = rotation_mode
         self.mixed_precision = mixed_precision
         self.n_outlier = n_outlier
         self.b_outlier = b_outlier if b_outlier is not None else b_mse + 1
@@ -650,13 +692,22 @@ class TurboQuantConfig:
 
         self._mixed_configs: dict = {}
 
-    def make_rotation(self, layer_idx: int, head_idx: int) -> RandomHadamardRotation:
-        seed = ((layer_idx * 1000003) ^ (head_idx * 999979) ^ 0xA5A5A5A5) & 0xFFFFFFFF
-        return RandomHadamardRotation(self.d_padded, seed, self.device)
+    def _make_rotation_impl(self, d: int, seed: int):
+        """Create a rotation using the configured mode."""
+        if self.rotation_mode == "dense":
+            return RandomOrthogonalRotation(d, seed, self.device)
+        return RandomHadamardRotation(d, seed, self.device)
 
-    def make_subset_rotation(
-        self, layer_idx: int, head_idx: int, subset: str, subset_dim: int
-    ) -> RandomHadamardRotation:
+    def make_rotation(self, layer_idx: int, head_idx: int):
+        seed = ((layer_idx * 1000003) ^ (head_idx * 999979) ^ 0xA5A5A5A5) & 0xFFFFFFFF
+        return self._make_rotation_impl(self.d_padded, seed)
+
+    def make_subset_rotation(self, layer_idx: int, head_idx: int, subset: str, subset_dim: int):
+        if self.rotation_mode == "dense":
+            # Dense mode doesn't need power-of-2 padding
+            salt = 0x13572468 if subset == "regular" else 0x24681357
+            seed = ((layer_idx * 1000003) ^ (head_idx * 999979) ^ salt ^ subset_dim) & 0xFFFFFFFF
+            return RandomOrthogonalRotation(subset_dim, seed, self.device)
         subset_padded = _next_power_of_two(max(subset_dim, 1))
         salt = 0x13572468 if subset == "regular" else 0x24681357
         seed = ((layer_idx * 1000003) ^ (head_idx * 999979) ^ salt ^ subset_padded) & 0xFFFFFFFF

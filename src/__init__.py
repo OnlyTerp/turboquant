@@ -28,6 +28,7 @@ from .cache import (
     QJLCompressed,
     Codebook,
     RandomHadamardRotation,
+    RandomOrthogonalRotation,
     MixedPrecisionConfig,
     # Core functions
     polarquant_encode,
@@ -81,6 +82,7 @@ __all__ = [
     "QJLCompressed",
     "Codebook",
     "RandomHadamardRotation",
+    "RandomOrthogonalRotation",
     "MixedPrecisionConfig",
     "polarquant_encode",
     "polarquant_decode",
