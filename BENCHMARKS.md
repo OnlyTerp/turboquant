@@ -163,6 +163,40 @@ def kv_cache_memory_gb(
 
 > FP16 calculations assume 2 bytes per value, 2 cache entries (K+V): `2 × n_layers × n_kv_heads × head_dim × seq_len × 2 bytes`. TurboQuant adds ~0.5 bytes/vector for norms.
 
+### 2026 frontier-model context table
+
+The models released in 2026 dramatically raised context-length expectations. TurboQuant's
+impact scales proportionally — every doubling of context length doubles the absolute KV
+memory savings. All numbers assume the listed context length fully populated.
+
+| Model | Layers | KV Heads | d | Context | FP16 KV | TurboQuant KV | Savings |
+|-------|--------|----------|---|---------|---------|---------------|---------|
+| **Llama 4 Scout** (109B MoE, 17B active) | 48 | 8 | 128 | 1M | 192 GB | 39 GB | 153 GB |
+| **Llama 4 Scout** | 48 | 8 | 128 | 10M | 1,920 GB | 391 GB | 1,529 GB |
+| **Llama 4 Maverick** (402B MoE, 17B active) | 64 | 8 | 128 | 1M | 256 GB | 52 GB | 204 GB |
+| **Qwen 3.5** (9B dense) | 40 | 8 | 128 | 256K | 40 GB | 8.1 GB | 31.9 GB |
+| **Qwen 3.5** (72B dense, assumed) | 80 | 8 | 128 | 256K | 80 GB | 16.3 GB | 63.7 GB |
+| **Qwen 3.5** (397B MoE) | 90 | 8 | 128 | 256K | 90 GB | 18.3 GB | 71.7 GB |
+| **Gemma 4 31B** | 56 | 8 | 128 | 128K | 28 GB | 5.7 GB | 22.3 GB |
+| **DeepSeek-V3** (MLA, effective KV) | 61 | 128 KV heads but latent | 512 latent | 128K | 8 GB (MLA) | 1.6 GB (TQ on latent) | 6.4 GB |
+| **OpenClaw 32B** (TriAttention target) | 48 | 8 | 128 | 32K | 3 GB | 0.6 GB | 2.4 GB |
+
+> **Numbers are illustrative.** Some 2026 models have non-public exact layer/head counts
+> as of Apr 17, 2026; the above uses conservative public-spec estimates. Recompute using
+> `kv_cache_memory_gb()` above for your specific deployment.
+
+#### What this means in practice
+
+- **Llama 4 Scout @ 10M context**: FP16 KV alone is ~2 TB — infeasible on any single
+  machine. TurboQuant cuts it to ~390 GB, which fits in an 8× H200 (141 GB HBM each) rig
+  with headroom.
+- **Qwen 3.5 9B @ 256K context**: FP16 KV is 40 GB — doesn't fit on a consumer card.
+  TurboQuant brings it to 8 GB, which fits alongside AWQ-INT4 weights on a single RTX
+  4090 or the [96 GB RTX PRO 6000 Blackwell](https://vrlatech.com/rtx-pro-6000-blackwell-vs-a100-vs-h100-vs-rtx-5090-ai-gpu-comparison-2026/)
+  with room for the model too.
+- **Llama 4 Maverick @ 1M context**: from [7× H200 for FP16 to 1× H200 for
+  TurboQuant+NVFP4](https://pub.towardsai.net/running-a-35b-model-locally-with-turboquant-whats-actually-possible-right-now-1ac5327430b0).
+
 ---
 
 ## Hardware Performance Targets
