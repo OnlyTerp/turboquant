@@ -1,0 +1,4 @@
+turboquant>=0.2.0
+torch>=2.1
+numpy
+gradio>=5.0

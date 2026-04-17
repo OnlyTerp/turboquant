@@ -24,6 +24,7 @@
 
 ## Table of contents
 
+- 🎛️ **[Live demo on HuggingFace Space](https://huggingface.co/spaces/OnlyTerp/turboquant-demo)** — see your model's KV cache shrink in real time
 - [What's new — April 2026](#whats-new--april-2026) • [Why TurboQuant?](#why-turboquant) • [How it works](#how-it-works) • [Quick start](#quick-start)
 - [The 2026 KV compression landscape](#the-2026-kv-compression-landscape)
 - [Integrations (vLLM, SGLang, llama.cpp, KVPress, LMCache, MLX)](#integrations)
