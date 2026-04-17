@@ -1,6 +1,8 @@
 # ⚡ TurboQuant
 
 [![Tests](https://github.com/OnlyTerp/turboquant/actions/workflows/test.yml/badge.svg)](https://github.com/OnlyTerp/turboquant/actions)
+[![PyPI](https://img.shields.io/pypi/v/turboquant.svg)](https://pypi.org/project/turboquant/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/turboquant.svg)](https://pypi.org/project/turboquant/)
 [![arXiv](https://img.shields.io/badge/arXiv-2504.19874-b31b1b.svg)](https://arxiv.org/abs/2504.19874)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -114,10 +116,24 @@ Input KV vector (FP16, d=128)
 ## Quick Start
 
 ```bash
-# Install
+# Install from PyPI
+pip install turboquant
+```
+
+```python
+# Use it
+from turboquant import TurboQuantCache
+
+cache = TurboQuantCache(n_layers=32, n_heads=8, d=128, b_mse=3, mixed_precision=True)
+# ... drop into your attention loop; see INTEGRATIONS.md for vLLM / SGLang / llama.cpp
+```
+
+Or install from source for hacking on it:
+
+```bash
 git clone https://github.com/OnlyTerp/turboquant.git
 cd turboquant
-pip install -e .
+pip install -e ".[dev]"
 
 # Run demo (synthetic vectors, no GPU needed)
 python src/demo.py

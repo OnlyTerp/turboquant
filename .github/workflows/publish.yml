@@ -1,0 +1,59 @@
+name: Publish to PyPI
+
+# Build on every push/PR so we catch packaging regressions before tagging.
+# Publish only on version tag push (vX.Y.Z) to PyPI via Trusted Publisher OIDC
+# (no long-lived PYPI_API_TOKEN secret needed). See:
+# https://docs.pypi.org/trusted-publishers/
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+      - name: Build
+        run: python -m build
+      - name: Check sdist + wheel
+        run: python -m twine check dist/*
+      - name: Smoke-test wheel install + import
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/pip install "torch==2.*" --index-url https://download.pytorch.org/whl/cpu
+          /tmp/smoke/bin/python -c "from turboquant import TurboQuantCache, TurboQuantConfig; import turboquant; print('turboquant', turboquant.__version__, 'OK')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI (tag only)
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/turboquant/
+    permissions:
+      # Required for Trusted Publisher OIDC exchange.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

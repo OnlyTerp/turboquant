@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include LANDSCAPE_2026.md
+include INTEGRATIONS.md
+include FAQ.md
+include BENCHMARKS.md
+include IMPLEMENTATION_NOTES.md
+include pseudocode.md
+recursive-include src *.py py.typed
+recursive-include vllm_plugin *.py
+recursive-exclude src test_*.py
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
