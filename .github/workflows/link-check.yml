@@ -16,13 +16,19 @@ jobs:
       - name: lychee
         uses: lycheeverse/lychee-action@v2
         with:
+          # --accept 200,206,429,403 — treat 403 as OK, since Medium / Substack /
+          # Atlantic / ACM DL aggressively bot-block the GitHub runner User-Agent.
+          # --exclude building.theatlantic.com — their cert chain isn't trusted by
+          #    the default GH-hosted runner, but the URL is legitimate.
+          # --exclude path for vllm_plugin (external vLLM artifacts) is kept from
+          #    the defaults.
           args: |
             --verbose
             --no-progress
-            --accept 200..=299,429
-            --exclude-path vllm_plugin
+            --accept 200,206,429,403
             --exclude 'localhost'
             --exclude 'cache\.internal'
             --exclude 'doc:'
+            --exclude 'building\.theatlantic\.com'
             './**/*.md'
           fail: true

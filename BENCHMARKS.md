@@ -46,7 +46,7 @@ End-to-end runs on a Blackwell consumer GPU, not synthetic — full report in
 ### Interpretation of the synthetic demo
 
 - **3.5-bit mode**: 0.975 avg cosine ≈ paper expectation (near-zero LongBench loss; see
-  [§Paper Results](../README.md#-paper-results-llama-31-8b-instruct-longbench--from-the-paper)).
+  the Paper Results table at the top of [README.md](README.md)).
 - **2.5-bit mode**: 0.913 avg cosine, 4.41× compression (7.1× theoretical if you strip
   norm overhead). Paper reports −0.62 LongBench pts at this setting — worth it when
   memory is the bottleneck.
