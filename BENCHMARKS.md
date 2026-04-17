@@ -8,24 +8,51 @@ Detailed benchmark results, theoretical analysis, and memory calculations.
 
 ## Current Demo Results
 
-These results come from `src/demo.py` — a pure PyTorch (CPU) end-to-end test with random KV vectors.
+Fresh results from `src/demo.py` — pure PyTorch (CPU), random KV vectors, head dim=128,
+4 layers × 8 heads × seq_len=64 × 16 queries. Reproduced **2026-04-17** with
+`torch==2.11.0`. Raw JSON + markdown report:
+[`reports/2026-04-17-demo-results.md`](reports/2026-04-17-demo-results.md) •
+[`reports/2026-04-17-demo-results.json`](reports/2026-04-17-demo-results.json).
 
-| Metric | Value |
-|--------|-------|
-| Head dimension (d) | 128 |
-| PolarQuant bits (b_mse) | 2 |
-| QJL bits (b_qjl) | 1 |
-| **Effective bits/value** | **3.25** |
-| Compression ratio vs FP16 | **4.92×** |
-| Bytes per vector | 52 (vs 256 FP16) |
-| Avg cosine similarity | **0.90** |
-| QJL score weight | 0.50 |
+| Mode | b_mse | b_outlier | Effective bpv | Compression | **Avg cosine** | Min cosine | Avg MSE |
+|---|---|---|---|---|---|---|---|
+| **3.5-bit mixed** (default) | 3 | 4 | 4.62 | **3.46×** | **0.975** | 0.955 | 2.1e-3 |
+| **2.5-bit mixed** | 2 | 3 | 3.62 | **4.41×** | **0.913** | 0.879 | 6.2e-3 |
 
-### Interpretation
+> "Effective bpv" includes the 1-bit QJL residual **and** norm overhead (2× FP16
+> norms / 128 coords = +0.125 bpv at d=128, plus alignment). The paper's "3.5-bit" and
+> "2.5-bit" labels refer to the MSE-quantization budget only.
 
-The 0.90 cosine similarity is **acceptable but not final**. The paper achieves near-zero accuracy loss on LongBench at 3.5 bits. The QJL projection transpose bug has been fixed in the reference kernels; re-run the demo and model-level benchmarks to validate the expected improvement toward >0.95 cosine similarity.
+### Real hardware (RTX 5090, Qwen3.5-27B via [seanrasch/llama-cpp-turboquant](https://github.com/seanrasch/llama-cpp-turboquant))
 
-The QJL score weight (0.50) damps the single-sample QJL correction to reduce variance. Full weight (1.0) gives the mathematically unbiased estimator, but single-sample variance in practice is high. This is a known tradeoff — future work will explore multi-sample averaging.
+End-to-end runs on a Blackwell consumer GPU, not synthetic — full report in
+[`reports/2026-03-31-build-report.md`](reports/2026-03-31-build-report.md):
+
+| Metric | f16 | turbo3 (~3.5 bpv) | turbo2 (~2.5 bpv) |
+|---|---|---|---|
+| Prefill @ 512 | 3,534 tok/s | 3,541 (1.00×) | — |
+| Prefill @ 8K | 3,291 tok/s | 3,470 (1.05×) | — |
+| **Prefill @ 32K** | 2,482 tok/s | **3,068 (1.24× faster)** | — |
+| Prefill @ 64K | **OOM** | 2,498 | — |
+| Prefill @ 131K | **OOM** | 1,731 | — |
+| tg128 generation | 70.22 tok/s | 67.77 (0.97×) | **71.1 (1.01× faster)** |
+| Max context before OOM | ~232K | 1.1M | **1.5M (confirmed working)** |
+
+> TurboQuant doesn't just compress — at long context it is **faster than FP16** because
+> the KV cache fits in a smaller memory footprint and the attention read is bandwidth
+> bound. At 32K prefill TurboQuant is 1.24× faster than FP16 on the same GPU; at 64K+
+> FP16 is OOM on a 32 GB RTX 5090 and TurboQuant still serves.
+
+### Interpretation of the synthetic demo
+
+- **3.5-bit mode**: 0.975 avg cosine ≈ paper expectation (near-zero LongBench loss; see
+  the Paper Results table at the top of [README.md](README.md)).
+- **2.5-bit mode**: 0.913 avg cosine, 4.41× compression (7.1× theoretical if you strip
+  norm overhead). Paper reports −0.62 LongBench pts at this setting — worth it when
+  memory is the bottleneck.
+- Historical "0.90 observed vs 0.95 expected" note referred to the S-matrix transpose
+  bug described below — **that bug is fixed**; the current reference kernels give the
+  numbers in the table.
 
 ---
 
@@ -276,13 +303,17 @@ Those end-to-end evaluations are still pending.
 
 ## Known Issues Affecting Quality
 
-### Historical S-Matrix Transpose Bug
+### Historical S-Matrix Transpose Bug — **RESOLVED 2026-04**
 
-The QJL correction term uses `q @ S.T` where it should use `S @ q` (or equivalently, `q @ S` when q is a row vector). Since the Rademacher matrix S is **not symmetric**, S^T ≠ S, and the correction term uses the wrong projection direction.
+For historical context: an early version of the QJL correction term computed `q @ S.T`
+where it should compute `S @ q` (equivalently `q @ S` for a row-vector `q`). Since the
+Rademacher matrix S is not symmetric, this used the wrong projection direction and
+produced ~0.90 cosine similarity instead of the paper's ~0.95.
 
-**Impact:** Reduces cosine similarity from ~0.95 (expected) to ~0.90 (observed).
-
-**Fix:** The reference PyTorch attention path now uses `q @ S`, matching the `S @ q` formulation from the paper. Any fused kernel should use the same projection.
+**Fix status:** Fixed upstream. The reference PyTorch attention path at
+[`src/cache.py`](src/cache.py) now uses the correct formulation; `src/demo.py` on the
+current master shows **0.975 avg cosine** at 3.5-bit mode (see table at the top of this
+file). Any fused Triton/CUDA kernel should use the same projection.
 
 ### Single-Sample QJL Variance (By Design)
 

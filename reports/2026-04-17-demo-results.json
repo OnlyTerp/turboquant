@@ -1,0 +1,48 @@
+{
+  "config": {
+    "n_layers": 4,
+    "n_heads": 8,
+    "d": 128,
+    "seq_len": 64,
+    "n_queries": 16,
+    "device": "cpu",
+    "seed": 42,
+    "torch": "2.11.0+cu130"
+  },
+  "results": [
+    {
+      "mode": "2.5-bit mixed",
+      "b_mse": 2,
+      "b_outlier": 3,
+      "bytes_per_vector": 58,
+      "bpv": 3.625,
+      "ratio": 4.413793103448276,
+      "encode_total_s": 10.178499464000197,
+      "vectors_encoded": 2048,
+      "encode_us_per_vec": 4969.970441406346,
+      "avg_cosine": 0.9134260900318623,
+      "min_cosine": 0.8791821599006653,
+      "max_cosine": 0.9454395771026611,
+      "avg_mse": 0.006180789088830352,
+      "avg_tq_us": 3955.421812491977,
+      "avg_std_us": 59.12781247729981
+    },
+    {
+      "mode": "3.5-bit mixed",
+      "b_mse": 3,
+      "b_outlier": 4,
+      "bytes_per_vector": 74,
+      "bpv": 4.625,
+      "ratio": 3.4594594594594597,
+      "encode_total_s": 26.53578821000019,
+      "vectors_encoded": 2048,
+      "encode_us_per_vec": 12956.927836914156,
+      "avg_cosine": 0.9734973683953285,
+      "min_cosine": 0.9633342027664185,
+      "max_cosine": 0.9819047451019287,
+      "avg_mse": 0.0020062725452589802,
+      "avg_tq_us": 3873.5136874663567,
+      "avg_std_us": 50.95756250739214
+    }
+  ]
+}

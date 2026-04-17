@@ -27,6 +27,7 @@
 | **SnapKV / H2O / PyramidKV / StreamingLLM** | Importance-based token eviction | High-ratio drop for long context (>100K) | **Orthogonal** — combine with TQ for multiplicative savings |
 | **KV Packet** (Apr 14, 2026) | Context-independent cache reuse via soft-token adapters | Cross-document KV reuse in RAG without recompute | Orthogonal — caches TQ-compressed packets across sessions |
 | **NVIDIA KVPress** | Framework of press strategies (ExpectedAttention, ThinK, etc.) | Plug-in eviction & budget control | Orthogonal — KVPress can drive *which* tokens TQ keeps |
+| **[kvtc](https://github.com/OnlyTerp/kvtc)** (sibling project) | PCA-decorrelated channel rotation + per-channel scalar quant | Calibration-based KV compression when a few samples of real activations are available | **Sibling** — same authors, data-**aware** variant; TurboQuant stays data-*oblivious* for zero-setup deployments |
 
 The short summary: **TurboQuant is a per-token precision compressor; the other axis is
 token selection/eviction; the third axis is hardware format (FP4/FP8/INT4).** The three

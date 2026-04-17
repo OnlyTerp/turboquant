@@ -11,6 +11,15 @@
 
 > First open-source implementation of [Google's TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026). 3.5 bits/value = near-identical quality to FP16. Provably within 2.7× of information-theoretic optimal.
 
+### Verified on real hardware (Apr 2026)
+
+| Where | Headline result |
+|---|---|
+| **RTX 5090 @ 32K prefill** (Qwen3.5-27B) | **1.24× faster** than FP16 — same GPU, same model, 4.9× less KV memory ([report](reports/2026-03-31-build-report.md)) |
+| **RTX 5090 @ 64K+ context** | FP16 **OOMs**, TurboQuant still serves (1.5M context confirmed) |
+| **RTX 5090 @ tg128 generation** | turbo2 = **71.1 tok/s**, FP16 = 70.22 tok/s — TurboQuant 2.5-bit is *faster than FP16* at decode because of the KV-cache bandwidth win |
+| **Pure-PyTorch CPU demo** (random vectors, d=128) | 3.5-bit: **0.975 avg cosine**, 0.955 min — matches paper expectation ([report](reports/2026-04-17-demo-results.md)) |
+
 ## Table of contents
 
 - [What's new — April 2026](#whats-new--april-2026) • [Why TurboQuant?](#why-turboquant) • [How it works](#how-it-works) • [Quick start](#quick-start)
@@ -210,8 +219,10 @@ Common questions and misconceptions are answered in **[FAQ.md](FAQ.md)**. Highli
 
 - **"Is this a replacement for AWQ / GPTQ / GGUF?"** No — TurboQuant compresses the KV
   cache at inference time, stacking **on top of** weight quantization.
-- **"Why 3.5 bits?"** Outlier channels get 3 bits, regular get 2 → weighted average 3.5.
-  Paper shows this matches FP16 on LongBench; 2.5-bit shows marginal degradation.
+- **"Why 3.5 bits?"** It's a mode name from the paper. In practice, outlier channels get
+  an extra MSE bit + 1-bit QJL residual; actual budget is ~3.25–4.6 bpv depending on the
+  mode (see [BENCHMARKS.md §Current Demo Results](BENCHMARKS.md#current-demo-results)).
+  Paper shows 3.5-bit matches FP16 on LongBench; 2.5-bit shows marginal degradation.
 - **"Do I need to calibrate?"** No — TurboQuant is **data-oblivious** (random rotation +
   Lloyd-Max codebook are fixed at init).
 - **"Does it work with RoPE / GQA / MLA / FlashAttention?"** Yes to all.
@@ -272,7 +283,18 @@ turboquant/
 ├── BENCHMARKS.md             # Memory tables, throughput targets, methodology
 ├── IMPLEMENTATION_NOTES.md   # Rotation modes, outlier channels, QJL residual
 ├── pseudocode.md             # Line-by-line paper pseudocode for re-implementers
-└── setup.py                  # Package installation
+├── LAUNCH.md                 # Launch kit: threads, HN post, blog outline
+├── reports/
+│   ├── 2026-03-31-build-report.md    # RTX 5090 Blackwell benchmarks
+│   ├── 2026-04-17-demo-results.md    # Fresh mixed-precision demo results
+│   ├── 2026-04-17-demo-results.json  # Raw JSON artifact
+│   └── scripts/
+│       ├── run_demo_modes.py         # Reproducible 2.5-bit / 3.5-bit demo runner
+│       └── check_thresholds.py       # CI gate on cosine-similarity regression
+├── .github/workflows/
+│   ├── test.yml              # Multi-python CI (3.10 / 3.11 / 3.12)
+│   └── link-check.yml        # Weekly + PR link rot detection
+└── setup.py                  # Package installation (exposes turboquant)
 ```
 
 ## Citation

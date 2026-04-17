@@ -7,7 +7,7 @@ Installs the package and registers it as a vLLM platform plugin so that
 
 from pathlib import Path
 
-from setuptools import setup, find_packages
+from setuptools import setup
 
 HERE = Path(__file__).resolve().parent
 
@@ -29,7 +29,11 @@ setup(
     author="TurboQuant Contributors",
     license="MIT",
     url="https://github.com/OnlyTerp/turboquant",
-    packages=find_packages(),
+    # Map src/ -> turboquant import name so `from turboquant import TurboQuantCache`
+    # works after `pip install turboquant` (matches every code example in the docs).
+    # vllm_plugin stays as its own top-level package for the vLLM platform-plugin entry point.
+    packages=["turboquant", "vllm_plugin"],
+    package_dir={"turboquant": "src"},
     python_requires=">=3.10",
     install_requires=[
         "torch>=2.1",
