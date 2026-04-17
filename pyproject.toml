@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turboquant"
+version = "0.2.0"
+description = "TurboQuant: near-optimal KV cache compression for LLM inference — 5× compression with near-zero quality loss (ICLR 2026)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "TurboQuant Contributors" },
+]
+maintainers = [
+    { name = "Terp AI Labs", email = "hello@onlyterp.dev" },
+]
+keywords = [
+    "llm",
+    "inference",
+    "kv-cache",
+    "kv-cache-compression",
+    "quantization",
+    "turboquant",
+    "polarquant",
+    "qjl",
+    "vllm",
+    "sglang",
+    "llama-cpp",
+    "long-context",
+    "iclr2026",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm>=0.4.0"]
+triton = ["triton>=2.2"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "build",
+    "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/OnlyTerp/turboquant"
+Documentation = "https://github.com/OnlyTerp/turboquant#readme"
+Repository = "https://github.com/OnlyTerp/turboquant"
+Issues = "https://github.com/OnlyTerp/turboquant/issues"
+Paper = "https://arxiv.org/abs/2504.19874"
+"2026 Landscape" = "https://github.com/OnlyTerp/turboquant/blob/master/LANDSCAPE_2026.md"
+Integrations = "https://github.com/OnlyTerp/turboquant/blob/master/INTEGRATIONS.md"
+
+[project.entry-points."vllm.platform_plugins"]
+turboquant = "vllm_plugin.platform:TurboQuantPlatform"
+
+[tool.setuptools]
+# Explicit package map — `src/` is imported as `turboquant`, `vllm_plugin/`
+# stays as-is so the vLLM platform-plugin entry point resolves.
+packages = ["turboquant", "vllm_plugin"]
+package-dir = { turboquant = "src", vllm_plugin = "vllm_plugin" }
+
+[tool.setuptools.package-data]
+turboquant = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # long lines allowed for paper citations / math comments
+
+[tool.pytest.ini_options]
+testpaths = ["src"]
+python_files = ["test_*.py"]

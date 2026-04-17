@@ -12,7 +12,7 @@ Reference: https://arxiv.org/abs/2504.19874
 Authors: Zandieh, Daliri, Hadian, Mirrokni (Google Research / NYU / Google DeepMind)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Terp AI Labs"
 __license__ = "MIT"
 
