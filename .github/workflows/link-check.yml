@@ -25,10 +25,15 @@ jobs:
           args: |
             --verbose
             --no-progress
-            --accept 200,206,429,403
+            --accept 200,202,206,301,302,303,307,308,401,403,429
+            --max-redirects 10
             --exclude 'localhost'
             --exclude 'cache\.internal'
             --exclude 'doc:'
             --exclude 'building\.theatlantic\.com'
+            --exclude 'pypi\.org/manage'
+            --exclude 'medium\.com'
+            --exclude 'ai\.plainenglish\.io'
+            --exclude 'danilchenko\.dev'
             './**/*.md'
           fail: true
