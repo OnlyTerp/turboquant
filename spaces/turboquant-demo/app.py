@@ -36,7 +36,7 @@ MODELS: dict[str, dict] = {
                                "note": "GQA 8 KV heads. Paper headline model."},
     "Llama-3.1-70B-Instruct": {"d": 128, "n_kv_heads": 8, "n_layers": 80,
                                 "note": "GQA 8 KV heads. 128K context."},
-    "Llama-4-Scout-17B-16E (128 experts, 1 active)": {
+    "Llama-4-Scout-17B-16E (16 experts, 1 active)": {
         "d": 128, "n_kv_heads": 8, "n_layers": 48,
         "note": "MoE (1 of 16 experts active). 10M context target."},
     "Qwen3-72B": {"d": 128, "n_kv_heads": 8, "n_layers": 80,
