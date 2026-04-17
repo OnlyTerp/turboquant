@@ -249,10 +249,10 @@ with gr.Blocks(title="TurboQuant KV Cache Compression — Live Demo") as demo:
         with gr.Row():
             b_mse_in = gr.Slider(label="b_mse (bits for scalar quant)",
                                  minimum=1, maximum=6, value=3, step=1)
-            b_out_in = gr.Slider(label="b_outlier (extra bits for outlier channels)",
+            b_out_in = gr.Slider(label="b_outlier (total bits for outlier channels)",
                                  minimum=1, maximum=8, value=4, step=1)
-            n_out_in = gr.Slider(label="n_outlier (# outlier channels)",
-                                 minimum=0, maximum=128, value=32, step=4)
+            n_out_in = gr.Slider(label="n_outlier (# outlier channels; 4..124, d-head=128)",
+                                 minimum=4, maximum=124, value=32, step=4)
         with gr.Row():
             seq_in = gr.Slider(label="# KV vectors (sequence length)",
                                minimum=16, maximum=256, value=64, step=16)
