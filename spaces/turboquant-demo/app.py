@@ -125,6 +125,10 @@ def live_demo(b_mse: int, b_outlier: int, n_outlier: int, seq_len: int,
     Mirrors src/demo.py: store a sequence of K/V vectors, run attention
     with N random queries, compare the output to the FP16 reference.
     """
+    # Gradio sliders with step=1 usually return ints but this isn't contractual;
+    # cast defensively so range() / 2**b_mse downstream never sees a float.
+    b_mse, b_outlier, n_outlier = int(b_mse), int(b_outlier), int(n_outlier)
+    seq_len, n_queries, seed = int(seq_len), int(n_queries), int(seed)
     torch.manual_seed(seed)
     d = 128
     cache = TurboQuantCache(
