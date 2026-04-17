@@ -267,11 +267,10 @@ with gr.Blocks(title="TurboQuant KV Cache Compression — Live Demo") as demo:
             inputs=[b_mse_in, b_out_in, n_out_in, seq_in, q_in, seed_in],
             outputs=result_out,
         )
-        demo.load(
-            live_demo,
-            inputs=[b_mse_in, b_out_in, n_out_in, seq_in, q_in, seed_in],
-            outputs=result_out,
-        )
+        # NOTE: intentionally no demo.load() here — live_demo runs a real
+        # TurboQuant encode + attention which takes ~2-3s and would hang the
+        # initial page render (Chrome "Page Unresponsive"). User clicks
+        # "Run TurboQuant" when they're ready.
 
     gr.Markdown(
         "---\n"
