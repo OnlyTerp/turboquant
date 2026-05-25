@@ -377,7 +377,7 @@ To reproduce the paper's claims (Llama-3.1-8B at 3.5-bit ~ FP16 LongBench), you 
 For the **2026 evaluation methodology** (the right way to evaluate today):
 
 1. Start with FP8 KV as your baseline.
-2. Run long-context retrieval ([MRCR-8 and MRCR-16](https://github.com/openai/simple-evals/blob/main/mrcr_eval.py))
+2. Run long-context retrieval ([MRCR-8 and MRCR-16](https://github.com/openai/simple-evals))
    and reasoning (AIME25 Pass@1, LiveCodeBench-v6) at your target context length.
 3. Try `turboquant_4bit_nc`, not `3bit_nc` or `*_q`.
 4. Skip first/last 2 layers from compression.

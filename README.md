@@ -387,7 +387,7 @@ TurboQuant runs under every major serving engine. Concrete commands in
 | **llama.cpp (head_dim=128)** | [spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | `-ctk tq3 -ctv tq3 -fa` |
 | **llama.cpp (any head_dim)** | [AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant) v1.4.2 — only fork supporting head_dim=256+ | `-ctk tq3 -ctv tq3 -fa` |
 | **PyTorch reference (QJL-free)** | [tonbistudio/turboquant-pytorch](https://github.com/tonbistudio/turboquant-pytorch) V3 | `pip install turboquant-pytorch` |
-| **MLX (Apple Silicon)** | [varjoranta MLX port](https://github.com/varjoranta/turboquant-vllm/tree/main/mlx) | `python -m turboquant.mlx.chat --model <id>` |
+| **MLX (Apple Silicon)** | [varjoranta MLX port](https://github.com/varjoranta/turboquant-vllm) (Metal kernels) | `python -m turboquant.mlx.chat --model <id>` |
 | **NVIDIA KVPress** | 0.4.0 — framework of "press" strategies | Stack TQ under ExpectedAttention / ThinK / AdaKV |
 | **LMCache** | First-class; [their explainer](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/) is still the best layperson intro | Store TQ-compressed K/V in distributed cache |
 | **Transformers (HF)** | Monkey-patch via `past_key_values=TurboQuantCache(...)` | [`src/test_real_model.py`](src/test_real_model.py) |

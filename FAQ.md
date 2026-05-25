@@ -363,7 +363,7 @@ Concrete steps:
 2. Establish a baseline with **FP16/BF16 KV** *and* **FP8 KV** at your target context
    length. (You need both — FP8 is what TQ has to beat, not just FP16.)
 3. Run two real evals at minimum:
-   - **Long-context retrieval:** [MRCR](https://github.com/openai/simple-evals/blob/main/mrcr_eval.py) (multi-round needle) at 32K, 64K, 128K. The Red Hat blog uses MRCR-8 and MRCR-16.
+   - **Long-context retrieval:** [MRCR](https://github.com/openai/simple-evals) (multi-round needle) at 32K, 64K, 128K. The Red Hat blog uses MRCR-8 and MRCR-16.
    - **Reasoning:** AIME25 or LiveCodeBench-v6 Pass@1 over 32+ samples (these surface
      reasoning degradation that retrieval evals miss).
 4. Switch to `turboquant_4bit_nc` (start here, not 3-bit) and re-run.

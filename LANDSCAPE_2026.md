@@ -398,7 +398,7 @@ See [INTEGRATIONS.md](INTEGRATIONS.md) for concrete commands and links. Summary:
 | **PyTorch reference (QJL-free)** | [tonbistudio/turboquant-pytorch](https://github.com/tonbistudio/turboquant-pytorch) V3 | `pip install turboquant-pytorch` |
 | **LMCache** | First-class; [explainer blog](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/) | Compose TQ-compressed tensors inside LMCache cross-session cache |
 | **NVIDIA KVPress** | Eviction/selection framework | Use KVPress for token eviction, TQ for per-token precision |
-| **MLX (Apple)** | [varjoranta Metal kernels](https://github.com/varjoranta/turboquant-vllm/tree/main/mlx) | `python -m turboquant.mlx.chat --model <id>` |
+| **MLX (Apple)** | [varjoranta Metal kernels](https://github.com/varjoranta/turboquant-vllm) | `python -m turboquant.mlx.chat --model <id>` |
 
 ---
 

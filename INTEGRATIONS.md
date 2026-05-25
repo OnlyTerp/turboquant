@@ -300,7 +300,7 @@ context-independent document caching.
 ## MLX (Apple Silicon)
 
 **Status (May 25, 2026):** MLX has no native FP4 tensor cores, but the
-[varjoranta/turboquant-vllm MLX port](https://github.com/varjoranta/turboquant-vllm/tree/main/mlx)
+[varjoranta/turboquant-vllm](https://github.com/varjoranta/turboquant-vllm) MLX port
 adds native Metal kernels for the FWHT rotation and 3/4-bit dequant. This is faster
 than the pure-PyTorch MPS path that this repo ships and is what the community converges
 on for M-series Macs.
