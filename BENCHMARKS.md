@@ -1,8 +1,15 @@
 # TurboQuant Benchmarks
 
-Detailed benchmark results, theoretical analysis, and memory calculations.
+Detailed benchmark results, theoretical analysis, and memory calculations. Updated
+**2026-05-25** with the [Red Hat AI / vLLM evaluation](https://blog.vllm.ai/2026/05/11/turboquant.html).
 
-> See also: [README.md](README.md) for a high-level overview.
+> See also: [README.md](README.md) for a high-level overview, and
+> [FAQ.md](FAQ.md#whats-the-accuracy-vs-speed-trade-off) for the headline accuracy
+> trade-off summary.
+
+> **TL;DR:** FP8 KV is the May 2026 default — it matches BF16 quality at zero throughput
+> cost. TurboQuant earns its place when you need >2× compression. The numbers below
+> include FP8 baselines so you can pick the right format for your scenario.
 
 ---
 
@@ -45,14 +52,73 @@ End-to-end runs on a Blackwell consumer GPU, not synthetic — full report in
 
 ### Interpretation of the synthetic demo
 
-- **3.5-bit mode**: 0.975 avg cosine ≈ paper expectation (near-zero LongBench loss; see
-  the Paper Results table at the top of [README.md](README.md)).
+- **3.5-bit mode**: 0.975 avg cosine on this synthetic test. This used to be cited as
+  evidence the algorithm was lossless. **It is not** — cosine similarity on random
+  vectors does not predict end-to-end output quality (see Red Hat / Towards AI evaluations
+  below). Treat synthetic cosine as a sanity check, not a benchmark.
 - **2.5-bit mode**: 0.913 avg cosine, 4.41× compression (7.1× theoretical if you strip
-  norm overhead). Paper reports −0.62 LongBench pts at this setting — worth it when
-  memory is the bottleneck.
+  norm overhead). Real-world quality at this setting is meaningfully worse than the
+  paper's 49.44 LongBench — see independent reproductions below.
 - Historical "0.90 observed vs 0.95 expected" note referred to the S-matrix transpose
   bug described below — **that bug is fixed**; the current reference kernels give the
   numbers in the table.
+
+---
+
+## Independent reproductions (May 2026)
+
+The most important data point in the current ecosystem. From the
+[Red Hat AI / vLLM blog post (May 11, 2026)](https://blog.vllm.ai/2026/05/11/turboquant.html):
+
+### Llama-3.3-70B-Instruct, MRCR long-context retrieval
+
+| KV format | KV reduction vs BF16 | MRCR-8 (avg) | MRCR-16 (avg) |
+|---|---|---|---|
+| BF16 | 1.0× | 1.000 | 1.000 |
+| **FP8 (E4M3)** | **2.0×** | **0.997** | **0.991** |
+| `turboquant_k8v4` | 2.0× | 0.989 | 0.973 |
+| `turboquant_4bit_nc` | 2.6× | 0.984 | 0.957 |
+| `turboquant_k3v4_nc` | 3.4× | 0.940 | 0.834 |
+| `turboquant_3bit_nc` | 3.6× | 0.901 | 0.722 |
+
+### Qwen3-30B-A3B, AIME25 reasoning (Pass@1 over 32 samples)
+
+| KV format | KV reduction | AIME25 |
+|---|---|---|
+| BF16 | 1.0× | **0.683** |
+| **FP8** | **2.0×** | **0.680** |
+| `turboquant_k8v4` | 2.0× | 0.668 |
+| `turboquant_4bit_nc` | 2.6× | 0.652 |
+| `turboquant_k3v4_nc` | 3.4× | 0.532 |
+| `turboquant_3bit_nc` | 3.5× | 0.443 |
+
+### Throughput on Qwen3-30B-A3B, single H100
+
+| KV format | Tokens/s | vs BF16 |
+|---|---|---|
+| BF16 | 4,520 | 1.00× |
+| **FP8** | **4,510** | **1.00×** (no penalty!) |
+| `turboquant_4bit_nc` | 2,680 | 0.59× |
+| `turboquant_3bit_nc` | 2,140 | 0.47× |
+
+**Why TurboQuant is slower than FP8 at decode:** FP8 quantizes both KV *storage* and
+the attention *compute* on hardware FP8 tensor cores (Hopper/Blackwell). TurboQuant only
+quantizes storage — attention compute still runs in BF16 after dequant. So you pay the
+dequant overhead on every decode step without getting any compute speedup. The
+[varjoranta CUDA kernels](https://github.com/varjoranta/turboquant-vllm) and
+[0xSero Triton kernels](https://github.com/0xSero/turboquant) recover some of this gap
+through fused dequant + GEMV, but not all of it.
+
+### Community-port replications
+
+- [scos-lab 8-model benchmark](https://github.com/tonbistudio/turboquant-pytorch/issues/8)
+  finds pure-MSE beats MSE+QJL on all 8 models tested (GPT-2-124M, Pythia-410M, OPT-1.3B,
+  Llama-3.1-8B, Mistral-7B, Phi-3.5, Qwen3-7B, Qwen3.6-35B-A3B). Establishes the K/V
+  norm ratio as the single best quality predictor.
+- [tonbistudio V3 retrospective](https://github.com/tonbistudio/turboquant-pytorch) reports
+  +300% PPL on GPT-2 at b=3 with QJL on Keys vs +7.6% with MSE-only.
+- [AI Intensify](https://ai-intensify.com/turboquant-is-compression-and-performance-worth-the-hype/)
+  reaches the same conclusions as Red Hat across Llama-3-70B, Qwen3-30B, MiniMax-M2.7.
 
 ---
 
@@ -105,19 +171,22 @@ This constant factor gap is tight — it's inherent to scalar quantization of hi
 
 ### Compression & Quality
 
-| Format | Bits/value | Bytes/vector | Compression | Quality | Unbiased IP? |
-|--------|-----------|-------------|-------------|---------|-------------|
-| FP16 | 16.00 | 256 | 1.0× | Baseline | — |
-| BF16 | 16.00 | 256 | 1.0× | ~99.9% | — |
-| FP8 (E4M3) | 8.00 | 128 | 2.0× | ~99.5% | — |
-| INT8 | 8.25 | 106 | 2.4× | ~99% | — |
-| INT4 | 4.25 | 54 | 4.7× | ~97% | No |
-| KIVI-2bit | 2.25 | 29 | 8.8× | ~95% | No |
-| **TurboQuant (3-bit)** | **3.25** | **52** | **4.9×** | **~99%** | **Yes** |
-| TurboQuant (4-bit) | 4.25 | 68 | 3.8× | ~99.5% | Yes |
-| TurboQuant (2-bit) | 2.25 | 36 | 7.1× | ~95% | Yes |
+Quality column shows **end-to-end output quality** (Red Hat / community measurements on
+Llama-3.3-70B), not synthetic cosine similarity. "Throughput vs BF16" reflects measured
+H100 decode throughput on Qwen3-30B-A3B.
 
-> Bits/value includes norm overhead: 16 bits (PolarQuant norm) + 16 bits (QJL residual norm) = 32 bits per vector. For d=128: +0.25 bits/value.
+| Format | Bits/value | Bytes/vector | Compression | Quality | Throughput vs BF16 | Notes |
+|---|---|---|---|---|---|---|
+| FP16 / BF16 | 16.00 | 256 | 1.0× | Baseline | 1.00× | — |
+| **FP8 (E4M3)** | **8.00** | **128** | **2.0×** | **No loss** | **1.00×** | **The May 2026 default** |
+| INT8 | 8.25 | 106 | 2.4× | ~99% | ~0.80× | Software dequant |
+| `turboquant_4bit_nc` | 4.25 | 68 | 3.0× | Within 1–2 pt of FP8 | ~0.59× | Recommended TQ config |
+| INT4 | 4.25 | 54 | 4.7× | ~97% | ~0.55× | Storage-only |
+| **TurboQuant 3-bit (paper)** | **3.25** | **52** | **4.9×** | **Synthetic 99%, real 70–85% on reasoning** | **~0.47×** | QJL on; **don't ship this** |
+| `turboquant_3bit_nc` | 3.25 | 52 | 4.9× | 15–25 pt drop on AIME25 / MRCR-16 | ~0.47× | QJL off; edge only |
+| KIVI-2bit | 2.25 | 29 | 8.8× | ~95% on short context, less on long | ~0.40× | Predecessor |
+
+> Bits/value for TQ includes norm overhead: 16 bits (PolarQuant norm) + 16 bits (QJL residual norm) = 32 bits per vector. For d=128: +0.25 bits/value. The `*_nc` variants drop the QJL residual norm and use a single 16-bit per-token norm rescale instead.
 
 ### Memory for Llama-3-8B-Instruct (128K context)
 
@@ -283,21 +352,36 @@ For a single query over seq_len = 8,192 tokens (Llama-3-8B, 8 KV heads, d=128):
 
 ### What the Paper Measures
 
-The paper reports **accuracy on LongBench** (a suite of long-context benchmarks) with actual LLM inference. This is the gold standard — cosine similarity on random vectors is a proxy metric.
+The paper reports **accuracy on LongBench** (a suite of long-context benchmarks) with
+actual LLM inference on Llama-3.1-8B-Instruct.
 
-- At 3.5 bits: **zero accuracy loss** on Llama-3.1-8B-Instruct
+- At 3.5 bits: **zero accuracy loss** on Llama-3.1-8B-Instruct LongBench Avg
 - At 2.5 bits: **marginal degradation**
 - On H100: 4-bit TurboQuant achieves **8× performance** over 32-bit for attention logits
 
+**These results do not generalize cleanly to frontier models.** The May 2026 Red Hat
+evaluation — the first rigorous independent reproduction — found 15–25 pt drops on
+Llama-3.3-70B / Qwen3-30B-A3B reasoning evals at 3-bit precision. The community ports
+independently identified the QJL stage as the culprit; see the "Independent
+reproductions" section above.
+
 ### Reproducing Paper Results
 
-To reproduce the paper's claims, you need:
-1. A real model (Llama-3-8B-Instruct or similar)
-2. TurboQuant integrated into the inference pipeline (vLLM plugin)
+To reproduce the paper's claims (Llama-3.1-8B at 3.5-bit ~ FP16 LongBench), you need:
+
+1. Llama-3.1-8B-Instruct
+2. TurboQuant integrated into the inference pipeline (vLLM upstream or our plugin)
 3. LongBench evaluation suite
 4. Hardware with sufficient memory (A100/H100 recommended)
 
-Those end-to-end evaluations are still pending.
+For the **2026 evaluation methodology** (the right way to evaluate today):
+
+1. Start with FP8 KV as your baseline.
+2. Run long-context retrieval ([MRCR-8 and MRCR-16](https://github.com/openai/simple-evals))
+   and reasoning (AIME25 Pass@1, LiveCodeBench-v6) at your target context length.
+3. Try `turboquant_4bit_nc`, not `3bit_nc` or `*_q`.
+4. Skip first/last 2 layers from compression.
+5. Profile your model's K vs V norm ratio; use `k3v4_nc` if K dominates.
 
 ---
 
@@ -315,21 +399,54 @@ produced ~0.90 cosine similarity instead of the paper's ~0.95.
 current master shows **0.975 avg cosine** at 3.5-bit mode (see table at the top of this
 file). Any fused Triton/CUDA kernel should use the same projection.
 
-### Single-Sample QJL Variance (By Design)
+### Single-Sample QJL Variance — the real story
 
-The QJL correction is applied from a single random projection sample. The variance of this estimate is:
+The QJL correction is applied from a single random projection sample. The variance of
+this estimate is:
 
 ```
 Var(⟨y, r̂⟩) ≤ (π / 2d) · ‖y‖² · ‖r‖²
 ```
 
-For d=128: Var ≤ 0.012 · ‖y‖² · ‖r‖². With ‖r‖ ≈ 0.3 (typical residual after 2-bit PQ), this is Var ≈ 0.001 · ‖y‖².
+For d=128: Var ≤ 0.012 · ‖y‖² · ‖r‖². With ‖r‖ ≈ 0.3 (typical residual after 2-bit PQ),
+this is Var ≈ 0.001 · ‖y‖².
 
-The `qjl_score_weight=0.5` parameter trades bias for variance reduction. Setting it to 1.0 gives the unbiased estimator but higher variance per-token.
+**This variance is what kills the QJL stage at b ≤ 3.** Softmax × exp() amplifies
+variance multiplicatively, and softmax over a long context concentrates that
+amplification on a small number of highly-attended tokens. The bias-variance trade-off
+doesn't favor QJL until b ≈ 5 — at which point you might as well use FP8.
+
+**Practical implication:** set `qjl_score_weight=0.0` for pure MSE (equivalent to the
+`*_nc` family). For the rationale see
+[FAQ "Does the QJL step actually help?"](FAQ.md#does-the-qjl-step-actually-help) and
+[LANDSCAPE_2026.md "Independent reproductions"](LANDSCAPE_2026.md#independent-reproductions-may-2026).
+
+### Layer sensitivity — confirmed May 2026
+
+The Red Hat evaluation confirmed what scos-lab originally proposed: **the first and
+last 2 layers carry disproportionate signal.** Skipping them from quantization
+preserves most of the quality at near-identical compression ratio.
+
+Layer outlier-channel statistics from [scos-lab](https://github.com/scos-lab/turboquant):
+
+| Layer position | % outlier channels (RMS > 3× median) |
+|---|---|
+| Layer 0 | ~20% |
+| Layers 1–2 | ~12% |
+| Middle layers | 4–6% |
+| Last 2 layers | ~10–15% |
+
+A fixed top-k=32 outlier allocation wastes bits in middle layers and under-allocates
+layer 0. The mixed-precision config in this repo defaults to a fixed top-k for backward
+compatibility — set `mode="dynamic"` on `MixedPrecisionConfig` to use the scos-lab
+threshold instead.
 
 ### Attention Sinks (Not Yet Implemented)
 
-The first few tokens in a sequence ("attention sinks") tend to receive disproportionately high attention weights. Their KV cache vectors should ideally be preserved in higher precision. This is planned but not yet implemented.
+The first few tokens in a sequence ("attention sinks") tend to receive disproportionately
+high attention weights. Their KV cache vectors should ideally be preserved in higher
+precision. This is what "skip first 2 layers" approximates at the layer granularity;
+proper per-token attention-sink handling is planned but not yet implemented.
 
 ---
 
@@ -337,11 +454,13 @@ The first few tokens in a sequence ("attention sinks") tend to receive dispropor
 
 ### Planned Tests
 
-- [ ] **Llama-3-8B on LongBench** — reproduce paper's accuracy claims
-- [ ] **Needle-in-haystack** — test retrieval at 128K context with TQ compression
-- [ ] **Triton vs PyTorch** — kernel speedup comparison
-- [ ] **RTX 5090 throughput** — real hardware benchmarks on consumer GPU
-- [ ] **H100 throughput** — datacenter GPU benchmarks
+- [ ] **Llama-3.1-8B on LongBench** — reproduce paper's headline 3.5-bit / 2.5-bit numbers
+  with our reference implementation
+- [ ] **MRCR-16 on Llama-3.3-70B** — reproduce Red Hat's per-variant scores
+- [ ] **AIME25 / LiveCodeBench-v6 on Qwen3-30B-A3B** — reproduce Red Hat's reasoning numbers
+- [ ] **First/last-2-layer skip ablation** — measure exact quality vs compression trade-off
+- [ ] **K/V norm-ratio profiler** — standardize the scos-lab metric across models
+- [ ] **Production-fork comparison** — our reference vs varjoranta CUDA vs 0xSero Triton on H100 / RTX 5090
 - [ ] **Mixed precision** — test PQ=3-bit for first N layers, 2-bit for rest
 - [ ] **GQA scaling** — test with different GQA ratios (1:1, 2:1, 4:1, 8:1)
 - [ ] **RoPE interaction** — pre-RoPE vs post-RoPE quality comparison

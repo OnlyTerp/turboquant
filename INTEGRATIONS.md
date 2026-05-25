@@ -1,19 +1,24 @@
 # TurboQuant Integrations
 
 > Concrete, copy-pasteable setup for the serving engines and frameworks TurboQuant plugs
-> into. Status and PR links as of **2026-04-17**. See
+> into. Status and PR links as of **2026-05-25**. See
 > [LANDSCAPE_2026.md](LANDSCAPE_2026.md) for the broader ecosystem survey.
+>
+> **Before you reach for TurboQuant, try `--kv-cache-dtype fp8` first.** The May 2026
+> [Red Hat AI evaluation](https://blog.vllm.ai/2026/05/11/turboquant.html) showed FP8 KV
+> matches BF16 quality on every benchmark with no throughput penalty. Only choose TurboQuant
+> when you need more than 2× compression. See [FAQ "Should I use FP8 or TurboQuant?"](FAQ.md#should-i-use-fp8-or-turboquant).
 
 ---
 
 ## Quick navigation
 
-- [vLLM](#vllm) — two paths: upstream PRs and our bundled backend plugin
-- [SGLang](#sglang) — PR #21419 adds `--kv-cache-dtype turboquant`
-- [llama.cpp](#llamacpp) — quantized-KV DP4A flash attention as of b8779
+- [vLLM](#vllm) — **merged upstream**; production fork available
+- [SGLang](#sglang) — WIP, multiple competing PRs
+- [llama.cpp](#llamacpp) — community forks for both head_dim=128 and head_dim=256
 - [NVIDIA KVPress](#nvidia-kvpress) — stack TurboQuant precision under KVPress eviction
 - [LMCache](#lmcache) — distributed / cross-session KV reuse on TurboQuant-compressed tensors
-- [MLX (Apple Silicon)](#mlx-apple-silicon) — pure-PyTorch path for M-series Macs
+- [MLX (Apple Silicon)](#mlx-apple-silicon) — Metal kernel port from varjoranta
 - [Transformers / HuggingFace](#transformers--huggingface) — direct PyTorch monkey-patch
 - [Docker + Helm](#docker--helm) — ship TurboQuant-serving rigs
 
@@ -21,18 +26,56 @@
 
 ## vLLM
 
-**Status (Apr 17, 2026):** two upstream PRs are in motion. This repo also ships a
-self-contained backend plugin under [`vllm_plugin/`](vllm_plugin/) that works against
-vLLM ≥ 0.4.0 without waiting for upstream merge.
+**Status (May 25, 2026):** TurboQuant is **merged upstream** in vLLM 0.20.x. You can
+also install a production fork with CUDA dequant kernels, or use this repo's
+self-contained plugin if you want a `pip install`-able path without patching vLLM.
 
 | Path | Status | Use when |
 |---|---|---|
-| [vLLM PR #39890 — official grouped `turboquant_3bit` / `turboquant_4bit`](https://github.com/vllm-project/vllm/pull/39890) | Open (2026-04-15) | You want first-class KV-cache-dtype support and are willing to track a PR branch |
-| [vLLM PR #38662 — initial TurboQuant attention backend](https://github.com/vllm-project/vllm/pull/38662) | Open (2026-03-31) | You want the full fused attention backend, not just a cache dtype |
-| [vLLM PR #39008 — legacy `tq4`](https://github.com/vllm-project/vllm/pull/39008) | **Closed** | Superseded by #39890 — avoid |
-| Our [`vllm_plugin/`](vllm_plugin/) backend plugin | Scaffold, works on vLLM ≥ 0.4.0 | You want a plugin that installs with `pip install -e .` and does not require patching vLLM |
+| **Upstream `vllm>=0.20.2` `--kv-cache-dtype turboquant_*`** | **Merged** ([docs.vllm.ai](https://docs.vllm.ai/en/v0.20.2/api/vllm/model_executor/layers/quantization/turboquant/)) | **Default. Use this.** |
+| [`turboquant-plus-vllm`](https://pypi.org/project/turboquant-plus-vllm/) production fork | v0.13.5 (May 13, 2026) | You need CUDA dequant kernels, MoE support, or native-packed TQ checkpoints |
+| [0xSero/turboquant](https://github.com/0xSero/turboquant) Triton reference | 1.1K stars | Research / kernel development; benchmarked on RTX 5090 and 8×RTX 3090 |
+| Our [`vllm_plugin/`](vllm_plugin/) backend plugin | Scaffold, works on vLLM ≥ 0.4.0 | You're stuck on an older vLLM and can't patch it |
 
-### Option A — Our bundled plugin (no upstream patching)
+### Option A — Upstream vLLM (recommended)
+
+```bash
+pip install "vllm>=0.20.2"
+
+# Use the recommended TQ variant — 4-bit with norm correction (no QJL)
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --kv-cache-dtype turboquant_4bit_nc \
+  --max-model-len 131072
+```
+
+Four variants ship in `vllm>=0.20.2`:
+
+| Variant | Bits per value | Quality | When to use |
+|---|---|---|---|
+| `turboquant_k8v4` | 8 K / 4 V | Small drop vs FP8 | Almost always dominated by `fp8` — rarely the right pick |
+| `turboquant_4bit_nc` | 4 (no QJL) | Within ~1 pt of FP8 | **The recommended TQ config** |
+| `turboquant_k3v4_nc` | 3 K / 4 V (no QJL) | 10–15 pt drop on reasoning | Qwen-class K-dominant models with extreme K/V norm asymmetry |
+| `turboquant_3bit_nc` | 3 (no QJL) | 15–25 pt drop on reasoning at long context | Edge / strict memory budget only |
+
+### Option B — `turboquant-plus-vllm` (production fork with CUDA kernels)
+
+Use this when you want the 10.1× decode speedup on Qwen3.6-35B-A3B, or when you need
+the `varjosoft/Qwen3.6-35B-A3B-TQ3-native` checkpoint (the first frontier MoE model with
+weights natively packed in TQ format).
+
+```bash
+pip install turboquant-plus-vllm   # bundles vLLM 0.20.2 + FlashInfer 0.5
+
+vllm serve varjosoft/Qwen3.6-35B-A3B-TQ3-native \
+  --kv-cache-dtype turboquant_3bit_native \
+  --max-model-len 131072
+```
+
+The `*_native` dtypes assume the model checkpoint already has its weights rotated into
+TQ-friendly layout; the per-expert rotation is baked into the weight tensor, which is
+what lets the CUDA kernel hit ~49 t/s on RTX 5090 with Qwen3.6-35B-A3B.
+
+### Option C — Our bundled plugin (no upstream patching)
 
 ```bash
 git clone https://github.com/OnlyTerp/turboquant.git
@@ -48,7 +91,7 @@ Environment-variable overrides (all prefixed `TQ_`):
 ```bash
 # Precision knobs
 export TQ_B_MSE=2              # PolarQuant bits per coordinate (default 2 → "3.5-bit" mode)
-export TQ_B_QJL=1              # QJL bits per coordinate
+export TQ_B_QJL=0              # QJL bits per coordinate (recommend 0 — May 2026 finding)
 export TQ_FLUSH_INTERVAL=128   # Raw buffer size before compression
 
 # GQA / model geometry (vLLM usually populates these automatically)
@@ -63,55 +106,51 @@ export TQ_DEVICE=cuda
 See [`vllm_plugin/README.md`](vllm_plugin/README.md) for the Python API and architecture
 details.
 
-### Option B — Upstream PR #39890 (grouped official modes)
-
-```bash
-# Check out the PR branch
-gh pr checkout 39890 --repo vllm-project/vllm
-
-pip install -e . --no-build-isolation
-
-# Run
-vllm serve meta-llama/Llama-3.1-8B-Instruct \
-  --kv-cache-dtype turboquant_3bit \
-  --max-model-len 131072
-```
-
-Also supports `turboquant_4bit` (higher quality, larger cache) and the legacy `*_nc`
-presets for backward compatibility.
-
-### Option C — Compose with NVFP4 weights on Blackwell
+### Option D — Compose with NVFP4 weights on Blackwell
 
 On SM100/SM120 (B100, B200, RTX 5090, RTX PRO 6000) the typical serving config is **NVFP4
-weights × TurboQuant KV**:
+weights × FP8 KV**. Switch the KV to TurboQuant only if FP8 doesn't give you enough
+headroom:
 
 ```bash
-# Weights: NVFP4 (requires pre-converted checkpoint)
-# KV: TurboQuant 3.5-bit
-vllm serve nvidia/Llama-3.1-8B-Instruct-NVFP4 \
+# Default Blackwell config: NVFP4 weights + FP8 KV
+vllm serve nvidia/Llama-3.3-70B-Instruct-NVFP4 \
   --quantization nvfp4 \
-  --kv-cache-dtype turboquant_3bit
+  --kv-cache-dtype fp8
+
+# Switch to TurboQuant only if FP8 KV doesn't fit
+vllm serve nvidia/Llama-3.3-70B-Instruct-NVFP4 \
+  --quantization nvfp4 \
+  --kv-cache-dtype turboquant_4bit_nc
 ```
 
-> As of Apr 17, 2026 the NVFP4-KV combination on desktop Blackwell (SM120) requires
+> As of May 2026 the NVFP4-KV combination on desktop Blackwell (SM120) still requires
 > tracking open upstream issues in flashinfer and CUTLASS; see
 > [Allen Kuo's Apr 16 writeup](https://allenkuo.medium.com/finishing-what-we-started-gemma-4-nvfp4-on-vllm-desktop-blackwell-wsl2-b2088c34815a)
-> for the current workarounds on RTX PRO 6000 + WSL2.
+> for current workarounds on RTX PRO 6000 + WSL2.
 
 ---
 
 ## SGLang
 
-**Status (Apr 17, 2026):** first-class `--kv-cache-dtype turboquant` via
-[PR #21419](https://github.com/sgl-project/sglang/pull/21419). Ships with Triton kernels
-for FWHT rotation, quantize/dequantize, and a fused 4-bit dequant kernel.
+**Status (May 25, 2026):** SGLang has **three competing PRs**, none merged. Watch this
+space — the SGLang maintainers have stated they will pick one approach once the design
+shakes out. For production today, use vLLM instead.
+
+| PR | Approach | Last activity |
+|---|---|---|
+| [#21419](https://github.com/sgl-project/sglang/pull/21419) | First-class `--kv-cache-dtype turboquant` with Triton kernels for FWHT + dequant | Mar 30, 2026 — stale |
+| [#22048](https://github.com/sgl-project/sglang/pull/22048) | Cleaner abstraction, integrates with SGLang's strategy pattern | May 4, 2026 — active |
+| [#23135](https://github.com/sgl-project/sglang/pull/23135) | Triton kernels only (no integration), waiting for the strategy PR | May 19, 2026 — active |
+
+If you want to experiment today, the most-active branch is #22048:
 
 ```bash
-gh pr checkout 21419 --repo sgl-project/sglang
+gh pr checkout 22048 --repo sgl-project/sglang
 pip install -e "python[all]"
 
 python -m sglang.launch_server \
-  --model-path meta-llama/Llama-3.1-8B-Instruct \
+  --model-path meta-llama/Llama-3.3-70B-Instruct \
   --kv-cache-dtype turboquant \
   --host 0.0.0.0 --port 30000
 ```
@@ -125,18 +164,30 @@ strategy-pattern abstraction.
 
 ## llama.cpp
 
-**Status (Apr 17, 2026):** no TurboQuant-specific path upstream yet, but
-[b8779 (Apr 13, 2026)](https://github.com/ggml-org/llama.cpp/releases/tag/b8779) shipped a
-Vulkan **DP4A shader for quantized KV flash attention**, making quantized-KV decoding
-fast enough to be the default on recent llama.cpp builds.
+**Status (May 25, 2026):** Two community forks support native TurboQuant in llama.cpp.
+The choice between them is driven by your model's head_dim:
 
-The closest off-the-shelf approximation to TurboQuant 3.5-bit today:
+| Fork | Head dim support | Best at |
+|---|---|---|
+| [**spiritbuun/llama-cpp-turboquant-cuda**](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | 128 only (Llama, Qwen2.5, Qwen3 ≤ 14B, Mistral) | Fast on Llama-3 family, smaller binary |
+| [**AmesianX/TurboQuant**](https://github.com/AmesianX/TurboQuant) | **Any** (128, 192, 256, 384) | Required for Qwen3.5/3.6, Gemma 4 (head_dim=256), DeepSeek-V3 (head_dim=192) |
+
+The AmesianX fork is the safer default — its P1→P5 head_dim detection cascade gracefully
+handles models where `n_embd/n_head` lies (Qwen3.5, Qwen3.6, Gemma 4), and as of
+[v1.4.2](https://github.com/AmesianX/TurboQuant/releases/tag/v1.4.2) (Apr 25, 2026) it
+has MMA tensor-core acceleration on the inverse-WHT dequant path (49 t/s on RTX 5090 +
+Qwen3.6-35B-A3B).
 
 ```bash
-# Quantize both K and V caches (q4_0 is the widely-supported option)
+# Build the AmesianX fork with CUDA
+git clone https://github.com/AmesianX/TurboQuant
+cd TurboQuant
+make GGML_CUDA=1 -j
+
+# Serve. Use tq3/tq4 cache types (TurboQuant-native) or fall back to q4_0 for compat
 ./llama-cli \
-  -m models/llama-3.1-8b-instruct.Q4_K_M.gguf \
-  -ctk q4_0 -ctv q4_0 \
+  -m models/qwen3.6-35b-a3b.gguf \
+  -ctk tq3 -ctv tq3 \
   -fa \
   -c 131072 \
   -p "your prompt"
@@ -144,14 +195,12 @@ The closest off-the-shelf approximation to TurboQuant 3.5-bit today:
 
 Flags:
 
-- `-ctk` / `-ctv` — cache type for K and V respectively. Options include `q4_0`, `q4_1`,
-  `q5_0`, `q5_1`, `q8_0`, `iq4_nl`, `fp16`.
-- `-fa` — flash attention, which in b8779+ has the DP4A path for quantized KV.
+- `-ctk` / `-ctv` — cache type. The TurboQuant-native types are `tq3` and `tq4`. Standard
+  `q4_0` / `q4_1` / `q5_0` / `q5_1` / `q8_0` / `iq4_nl` / `fp16` are also supported as
+  fallbacks.
+- `-fa` — flash attention. In [b8779+](https://github.com/ggml-org/llama.cpp/releases/tag/b8779)
+  upstream this uses a Vulkan DP4A shader for quantized KV; both forks override with their own CUDA path.
 - `-c` — context length.
-
-For a native TurboQuant path, watch the project
-[github.com/hackimov/turboquant-kv](https://github.com/hackimov/turboquant-kv) — the
-sibling port has been prototyping a ggml integration, though it is not yet upstream.
 
 ---
 
@@ -250,9 +299,24 @@ context-independent document caching.
 
 ## MLX (Apple Silicon)
 
-**Status (Apr 17, 2026):** MLX has no native FP4 tensor cores, but the TurboQuant
-pure-PyTorch path runs on M-series Macs via the MPS backend. Quality matches the CUDA
-path; throughput is CPU/GPU-bandwidth bound.
+**Status (May 25, 2026):** MLX has no native FP4 tensor cores, but the
+[varjoranta/turboquant-vllm](https://github.com/varjoranta/turboquant-vllm) MLX port
+adds native Metal kernels for the FWHT rotation and 3/4-bit dequant. This is faster
+than the pure-PyTorch MPS path that this repo ships and is what the community converges
+on for M-series Macs.
+
+```bash
+# Install the varjoranta MLX port
+pip install "turboquant-mlx"   # PyPI package from the varjoranta repo
+
+# Run a chat loop with TurboQuant KV compression on M3/M4/M5
+python -m turboquant.mlx.chat \
+  --model mlx-community/Llama-3.3-70B-Instruct-4bit \
+  --kv-bits 4 \
+  --kv-mode nc
+```
+
+If you want to stay on this repo's pure-PyTorch path (slower, but uses the public API):
 
 ```bash
 pip install -e .   # installs the pure-PyTorch TurboQuant
@@ -320,7 +384,7 @@ docker run --gpus all --ipc=host \
   -p 8000:8000 \
   -e HF_TOKEN="$HF_TOKEN" \
   -e VLLM_ATTENTION_BACKEND=turboquant \
-  -e TQ_B_MSE=2 -e TQ_B_QJL=1 \
+  -e TQ_B_MSE=2 -e TQ_B_QJL=0 \
   turboquant-vllm \
   --model meta-llama/Llama-3.1-8B-Instruct \
   --max-model-len 131072
@@ -336,7 +400,7 @@ extraEnv:
   - name: TQ_B_MSE
     value: "2"
   - name: TQ_B_QJL
-    value: "1"
+    value: "0"            # disable QJL per May 2026 community consensus
   - name: TQ_FLUSH_INTERVAL
     value: "128"
 ```
@@ -349,11 +413,13 @@ extraEnv:
 |---|---|---|
 | Python | 3.10, 3.11, 3.12 | `match` statements used internally |
 | PyTorch | 2.1+ | MPS works on Apple Silicon |
-| CUDA | 11.8, 12.1, 12.4, 12.6 | 12.6+ recommended for Blackwell |
+| CUDA | 11.8, 12.1, 12.4, 12.6, 12.8 | 12.8+ recommended for Blackwell SM120 |
 | Triton | 2.2+ (optional) | Enables GPU kernels in [`src/kernels.py`](src/kernels.py) |
-| vLLM | 0.4.0+ | 0.9+ recommended for the plugin entry point |
-| SGLang | main (PR #21419 branch) | Wait for merge for a stable tag |
-| llama.cpp | b8779+ | DP4A flash-attn for quantized KV |
+| vLLM (upstream) | **0.20.2+** | Merged `--kv-cache-dtype turboquant_*` |
+| vLLM (production fork) | turboquant-plus-vllm 0.13.5 | Bundles CUDA dequant + FlashInfer CUTLASS MoE |
+| vLLM (plugin path) | 0.4.0+ | 0.9+ recommended for the plugin entry point |
+| SGLang | main — PRs [#21419](https://github.com/sgl-project/sglang/pull/21419), [#22048](https://github.com/sgl-project/sglang/pull/22048), [#23135](https://github.com/sgl-project/sglang/pull/23135) | None merged as of May 2026 |
+| llama.cpp | AmesianX v1.4.2 / spiritbuun latest | Use AmesianX for head_dim ≥ 192 |
 | KVPress | 0.4.0 | Stack eviction × precision |
 | LMCache | latest | Cross-process cache sharing |
 
@@ -391,6 +457,32 @@ Fall back to the Triton backend: `--attention-backend TRITON`.
 
 ### "Throughput is slow on H100"
 
-The pure-PyTorch path is a reference, not a production kernel. On H100, use the Triton
-kernels (`src/kernels.py`) or SGLang's fused kernels from PR #21419. The PyTorch path is
-roughly 25× slower than FP16 attention; Triton closes ~80% of that gap.
+The pure-PyTorch path is a reference, not a production kernel. For production on H100:
+
+1. **First, try `--kv-cache-dtype fp8`.** It matches BF16 quality at zero throughput
+   cost on Hopper/Blackwell. If that fits your memory budget, you don't need TurboQuant.
+2. If you need >2× compression, use
+   [`turboquant-plus-vllm`](https://pypi.org/project/turboquant-plus-vllm/) (CUDA dequant
+   kernels, 10.1× over the reference path) or
+   [0xSero/turboquant](https://github.com/0xSero/turboquant) (Triton kernels).
+3. The plain PyTorch path is roughly 25× slower than FP16 attention; the Triton kernels
+   in `src/kernels.py` close ~80% of that gap but still aren't competitive with the
+   production forks.
+
+### "Output quality is worse than the paper claims"
+
+The most common culprits, in order:
+
+1. **You're using a QJL-augmented variant at b ≤ 3.** Switch to a `*_nc` (no-QJL) variant
+   or set `qjl_score_weight=0.0`. See [FAQ "Does the QJL step actually help?"](FAQ.md#does-the-qjl-step-actually-help).
+2. **You're not skipping the first / last 2 layers.** vLLM's `*_nc` paths do this
+   automatically; custom integrations need to add it.
+3. **Your model has head_dim > 128 and you're using the spiritbuun llama.cpp fork.**
+   Switch to [AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant), which detects
+   head_dim correctly for Qwen3.5, Qwen3.6, Gemma 4.
+4. **You're using 3-bit modes on reasoning workloads.** The Red Hat eval showed 15–25
+   pt drops on AIME25 at long context with `turboquant_3bit_nc`. Use `turboquant_4bit_nc`
+   or fall back to FP8 KV.
+5. **You're benchmarking with cosine similarity on random vectors instead of MRCR /
+   LongBench / AIME25.** Cosine similarity doesn't predict end-to-end quality — see
+   [FAQ "What's the right way to benchmark my model?"](FAQ.md#whats-the-right-way-to-benchmark-my-model).
