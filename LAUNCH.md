@@ -1,4 +1,21 @@
-# TurboQuant Launch Kit
+# TurboQuant Launch Kit (Archive — April 2026)
+
+> **Archive notice (May 2026):** This file collected ready-to-post content for the
+> **ICLR 2026 poster week** launch window in April 2026. It's preserved as a snapshot
+> of the project's marketing materials at that moment. The framing below reflects the
+> *pre-Red Hat-evaluation* messaging; for the current accurate framing see
+> [README.md](README.md) and [LANDSCAPE_2026.md](LANDSCAPE_2026.md). In particular:
+>
+> - The "near-zero accuracy loss" hook overstates the case for 3-bit modes (see
+>   [Red Hat May 11 eval](https://blog.vllm.ai/2026/05/11/turboquant.html)).
+> - Use `turboquant_4bit_nc` for production, not the QJL-augmented variants the hooks
+>   below imply.
+> - FP8 KV is the better default in May 2026; TurboQuant earns its place when
+>   compression > 2× is required.
+>
+> If you reuse any of this content, update the headline claim accordingly.
+
+---
 
 This file collects ready-to-post content for the **ICLR 2026 poster week** launch window
 (Zandieh et al. poster on **Sat Apr 25, 11:15 AM PDT**, session 10006985).

@@ -1,8 +1,116 @@
 # TurboQuant FAQ
 
-> Common questions and misconceptions, updated **2026-04-17**. For the broader 2026
+> Common questions and misconceptions, updated **2026-05-25**. For the broader 2026
 > landscape, see [LANDSCAPE_2026.md](LANDSCAPE_2026.md). For concrete integrations, see
 > [INTEGRATIONS.md](INTEGRATIONS.md).
+
+---
+
+## "Should I use FP8 or TurboQuant?"
+
+**Default to FP8.** The [Red Hat AI / vLLM evaluation (May 11, 2026)](https://blog.vllm.ai/2026/05/11/turboquant.html)
+is rigorous and conclusive on this question: across Llama-3.3-70B, Qwen3-30B-A3B, and
+MiniMax-M2.7, on both long-context retrieval (MRCR) and reasoning (AIME25, GPQA, MATH500,
+LiveCodeBench-v6), **FP8 (E4M3) KV cache** delivers:
+
+- **No measurable accuracy loss** vs BF16
+- **No throughput penalty** (4,510 t/s vs 4,520 t/s BF16 on Qwen3-30B-A3B / H100)
+- **2× memory savings**
+
+**Use TurboQuant only when:**
+
+1. **2× isn't enough.** You need to fit a 70B+ model + cache on a single GPU at 128K+
+   context, or you're memory-bound below the FP8 floor.
+2. **Your hardware doesn't have FP8 attention.** On RTX 4090/4080 (Ada), older AMD,
+   Apple Silicon, and most edge accelerators, FP8 KV doesn't give you the throughput
+   bonus because the attention kernel still runs in BF16. TurboQuant's bandwidth savings
+   are still useful there.
+
+If you do reach for TurboQuant, use `turboquant_4bit_nc` — see the next question.
+
+---
+
+## "Which TurboQuant variant should I pick?"
+
+```
+vllm serve <model> --kv-cache-dtype turboquant_4bit_nc
+```
+
+**`turboquant_4bit_nc`** is the production-grade variant. It gives ~2.6–3.1×
+compression (1.5× more than FP8) with quality within ~1 pt of FP8 on long-context evals.
+The `_nc` suffix means "norm correction" — it drops the QJL residual in favor of a
+simpler per-token norm rescale, which the community independently found to be uniformly
+better at low bit widths.
+
+The full ladder:
+
+| Variant | KV reduction vs BF16 | Quality | When to use |
+|---|---|---|---|
+| `fp8` (not TQ, baseline) | 2.0× | Matches BF16 | **Always try first** |
+| `turboquant_k8v4` | 2.0× | Slight drop vs FP8 | Rarely the right pick — FP8 wins |
+| **`turboquant_4bit_nc`** | **2.6–3.1×** | Within 1–2 pt of FP8 | **The recommended TQ config** |
+| `turboquant_k3v4_nc` | 3.4× | 10–15 pt drop on reasoning | Qwen-class with extreme K/V norm asymmetry |
+| `turboquant_3bit_nc` | 3.5–4.0× | 15–25 pt drop on reasoning | Edge / strict memory budget only |
+
+---
+
+## "Does the QJL step actually help?"
+
+**Usually not at b ≤ 3.** This is the most surprising finding from the May 2026
+ecosystem. The paper's `TurboQuantProd` algorithm appends a 1-bit QJL (Quantized
+Johnson-Lindenstrauss) sign residual to the MSE quantizer for an unbiased inner-product
+estimator. In theory it's strictly better than MSE-only. In practice, every independent
+reproduction has found the opposite at the bit widths people actually use:
+
+- [tonbistudio V3 README](https://github.com/tonbistudio/turboquant-pytorch): "the
+  paper's TurboQuantProd (QJL) for Keys gives +300% PPL at b=3 on GPT-2. MSE for both
+  K and V gives only +7.6%."
+- [scos-lab 8-model benchmark](https://github.com/tonbistudio/turboquant-pytorch/issues/8):
+  pure MSE beats MSE+QJL on every model tested.
+- [Red Hat AI](https://blog.vllm.ai/2026/05/11/turboquant.html): the `*_nc` (no-QJL)
+  variants strictly Pareto-dominate the QJL-augmented variants.
+
+**Why?** The QJL residual is *unbiased* but high-variance. Softmax in the attention
+computation exponentially amplifies that variance, so the variance-bias trade-off doesn't
+favor adding QJL at low bit widths. For Hadamard MSE quantizers at b ≥ 5 the paper's
+analysis still holds — it's just that nobody is using b ≥ 5 because at that point you
+might as well use FP8.
+
+**What this repo defaults to:** the paper's algorithm (QJL on). Set `qjl_score_weight=0.0`
+to switch to pure MSE — or use the `*_nc` variants in the vLLM `--kv-cache-dtype` flag.
+
+---
+
+## "Which layers should I skip from compression?"
+
+The first and last 2 layers. The Red Hat evaluation found that these layers carry
+disproportionate signal — quantizing them costs more accuracy than the bits they save.
+vLLM does this automatically for the `*_nc` variants. If you're rolling your own
+attention backend:
+
+```python
+SKIP = set(list(range(2)) + list(range(num_layers - 2, num_layers)))
+# Keep FP16/FP8 KV for layers in SKIP; use TurboQuant for the rest.
+```
+
+---
+
+## "How do I choose K vs V bits for my model?"
+
+**Profile the per-channel K vs V norm ratio.** This single statistic predicts compression
+quality better than any other metric the community has identified.
+
+- Llama-class models: K/V norm ratio is roughly symmetric (1–3×). A uniform `4bit_nc`
+  config works well.
+- Qwen-class models: K/V norm ratio is **massively asymmetric** — Qwen3.5-7B sees a 106×
+  ratio, Qwen3.6-35B-A3B sees 182×. K dominates the norm budget. Use `k8v4` or
+  `k3v4_nc`.
+- DeepSeek-V3 (MLA): the latent is small enough that K and V are roughly comparable —
+  treat similarly to Llama-class.
+
+To profile: run [`scos-lab/turboquant`](https://github.com/scos-lab/turboquant) on a few
+batches of representative inputs and inspect the per-head K/V norm histograms. The K
+budget should roughly match the K/V norm ratio in entropy bits.
 
 ---
 
@@ -66,20 +174,26 @@ layer/head at model load, not per-request.
 
 ## "How does this differ from KIVI / KVQuant / FP8 KV cache?"
 
-| Property | FP8 KV | KIVI (2-bit) | KVQuant | **TurboQuant 3.5-bit** |
-|---|---|---|---|---|
-| Bits/value | 8 | 2.25 | ~3.5 | **3.5** |
-| Compression vs FP16 | 2× | 7.1× | ~4.5× | **4.9×** |
-| LongBench Avg (Llama-3.1-8B) | 50.0 | 48.50 | ~49.5 | **50.06** |
-| Requires calibration | No | No | Yes | **No** |
-| Unbiased attention scores | No | No | No | **Yes** (QJL residual) |
-| Outlier handling | Per-tensor scale | Per-channel K | Dense-sparse split | **Two-rotation split** |
-| Works on RoPE'd K | Yes | Per-channel helps here | Pre-RoPE preferred | Yes, post-RoPE |
+| Property | FP8 KV (E4M3) | KIVI (2-bit) | KVQuant | TurboQuant `4bit_nc` | TurboQuant `3bit_nc` |
+|---|---|---|---|---|---|
+| Bits/value | 8 | 2.25 | ~3.5 | 4.0 | 3.0 |
+| Compression vs BF16 | **2.0×** | 7.1× | ~4.5× | 2.6–3.1× | 3.5–4.0× |
+| MRCR-8 needle (Llama-3.3-70B) | **0.997** | not reported | not reported | 0.984 | 0.901 |
+| AIME25 (Qwen3-30B-A3B) | **0.680** | — | — | 0.652 | 0.443 |
+| Throughput penalty | **None** | High | Moderate | ~40% | ~50% |
+| Requires calibration | No | No | Yes | **No** | **No** |
+| Quantizes attention compute | **Yes (FP8 cores)** | No | No | No | No |
+| Works on RoPE'd K | Yes | Per-channel helps | Pre-RoPE preferred | Yes | Yes |
+| Best at | Default for most use cases | Older deployments | Sub-4-bit with calibration | Memory-bound long context | Edge / on-device |
 
-The **unbiased inner product estimator** (the 1-bit QJL residual stage) is what makes
-TurboQuant's attention scores mathematically unbiased, not just MSE-minimizing. This is
-why it preserves needle-in-haystack retrieval at 128K context where the other methods
-start to miss specific tokens.
+Sources: [Red Hat AI eval (May 11, 2026)](https://blog.vllm.ai/2026/05/11/turboquant.html),
+[TurboQuant paper](https://arxiv.org/abs/2504.19874).
+
+**Why doesn't TurboQuant beat FP8 at the same quality?** FP8 quantizes both the KV
+storage *and* the attention compute on hardware FP8 tensor cores (Hopper/Blackwell).
+TurboQuant only quantizes storage — it dequantizes back to BF16 for the actual softmax
+× value-projection compute. So FP8 wins on throughput *and* matches quality at 2×; TQ
+only catches up in scenarios that demand more than 2× compression.
 
 ---
 
@@ -152,19 +266,30 @@ For now, if you're running beyond 64K context, stack TurboQuant with
 
 ## "What's the accuracy vs speed trade-off?"
 
-On current hardware (Apr 2026):
+On Hopper/Blackwell hardware (May 2026, [Red Hat measurements](https://blog.vllm.ai/2026/05/11/turboquant.html)
+on Qwen3-30B-A3B / H100):
 
-| Metric | FP16 baseline | TurboQuant 3.5-bit | TurboQuant 2.5-bit |
-|---|---|---|---|
-| LongBench Avg (Llama-3.1-8B) | 50.06 | **50.06** | 49.44 |
-| Needle @ 128K | 0.997 | **0.997** | 0.997 |
-| KV memory | 1.0× | **0.20×** | 0.14× |
-| H100 attention throughput (estimated, [BENCHMARKS.md](BENCHMARKS.md#attention-throughput-tokensssec)) | 1.0× | **4.4×** | 4.6× |
-| RTX 5090 attention throughput | 1.0× | **4.3×** | 4.5× |
-| On-paper distortion gap vs info-theoretic optimal | — | **2.7×** | 2.7× |
+| Metric | BF16 | **FP8 KV** | TQ `4bit_nc` | TQ `3bit_nc` |
+|---|---|---|---|---|
+| AIME25 | 0.683 | **0.680** | 0.652 | 0.443 |
+| MRCR-8 (Llama-3.3-70B) | 1.000 | **0.997** | 0.984 | 0.901 |
+| KV memory | 1.0× | **0.50×** | 0.32–0.38× | 0.25–0.29× |
+| Tokens/s (decode) | 4,520 | **4,510** | 2,680 | 2,140 |
+| Throughput penalty | 0% | **0%** | ~40% | ~50% |
 
-The throughput win comes from **memory bandwidth**: the attention kernel reads 52 bytes
-per KV vector instead of 256.
+**TurboQuant's throughput penalty** comes from a structural mismatch: FP8 quantizes both
+KV *storage* and attention *compute* on hardware FP8 tensor cores. TurboQuant only
+quantizes storage — the attention compute still runs in BF16 after dequantization. So
+you pay the dequant cost on every decode step.
+
+The paper-promised "memory bandwidth win" only materializes when you actually need
+>2× compression (and therefore are memory-bandwidth bound, not compute bound). For most
+serving setups, **FP8 wins on throughput, accuracy, and simplicity simultaneously**.
+
+The CUDA-fused dequant kernels in [`turboquant-plus-vllm`](https://github.com/varjoranta/turboquant-vllm)
+recover some of this gap (the v0.13.0 release reports 10.1× decode speedup on
+Qwen3.6-35B-A3B over the reference path), but FP8 remains faster in the regime where
+both fit.
 
 ---
 
@@ -183,43 +308,73 @@ The crossover point where TurboQuant starts earning its keep:
 
 ---
 
-## "How does TurboQuant relate to the viral 'TurboQuant is the breakthrough of the year' takes on X?"
+## "Is TurboQuant the breakthrough of the year, like X/Twitter said in April?"
 
-The quote is from the
-[LMCache blog post (Apr 15, 2026)](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/),
-paraphrasing discussion on X/Twitter. Our read:
+Short answer: **The April 2026 hype overshot. The May 2026 picture is more nuanced.**
 
-- **The hype is largely earned.** Data-oblivious, provably near-optimal, no calibration,
-  3.5 bpv at FP16 quality is genuinely new.
-- **It's not the only 2026 breakthrough.** TriAttention (Apr 6), LRKV (Apr 9), Adaptive
-  KV-Quant (Apr 6), and NVFP4 KV (Apr 2) are all major shifts. TurboQuant is the
-  **precision** story; the others are **selection**, **architecture**, and **hardware**
-  stories.
-- **The best 2026 stack combines them.** See
-  [LANDSCAPE_2026.md §Decision guide](LANDSCAPE_2026.md#decision-guide-which-compressor-do-i-actually-want).
+In mid-April, the [LMCache blog post](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/)
+paraphrased X/Twitter chatter calling TurboQuant "the most significant AI breakthrough
+this year." That framing made sense given the paper's claims — data-oblivious, provably
+near-optimal, 3.5 bpv at FP16 quality.
+
+Then the [Red Hat AI evaluation in May](https://blog.vllm.ai/2026/05/11/turboquant.html)
+ran the actual benchmarks and reported what independent ports had been finding for weeks:
+
+1. **FP8 KV is a better default** than any TurboQuant config the team tested. It's free
+   on Hopper/Blackwell.
+2. **The 3-bit modes the paper headline-tests don't generalize cleanly** to frontier
+   models. AIME25 drops 24 pts on Qwen3-30B-A3B with `turboquant_3bit_nc`.
+3. **The QJL "residual" step the paper considers essential** actually hurts in practice.
+   The `*_nc` variants drop QJL and outperform.
+
+**Where TurboQuant is genuinely a contribution:**
+
+- A clean, calibration-free quantization algorithm that *works* (especially `4bit_nc`).
+- A useful tool for fitting models on memory-constrained hardware where 2× FP8 isn't
+  enough.
+- A mathematical framework (random rotation + scalar VQ) that's likely to influence
+  future work even if the QJL step doesn't survive.
+
+**Where the hype overshot:**
+
+- It is not a universal replacement for existing KV quantization.
+- The "3.5 bits at zero accuracy loss" claim doesn't hold up on frontier MoE models.
+- It's a precision tool, not the precision tool — and FP8 wins the default slot.
+
+The 2026 KV-compression landscape has several major shifts of comparable importance:
+TriAttention (token selection, Apr 6), LRKV (architectural, Apr 9), Adaptive KV-Quant
+(per-token bits, Apr 6), NVFP4 KV (hardware, Apr 2). The best 2026 stack combines them
+along orthogonal axes — see [LANDSCAPE_2026.md §Decision guide](LANDSCAPE_2026.md#decision-guide-which-compressor-do-i-actually-want).
 
 ---
 
 ## "What's the right way to benchmark my model?"
 
-Use the paper's methodology — **LongBench + Needle-In-A-Haystack** at your target
-context length. Cosine similarity on random vectors (what `src/demo.py` reports) is a
-useful sanity check but not a substitute for end-to-end eval.
+The Red Hat evaluation uses the right methodology. Don't rely on cosine similarity
+metrics on random vectors — they are useful sanity checks but **do not predict
+end-to-end output quality**. The tonbistudio team published a retracted
+"18/18 perfect generation at 5× compression" claim caused by a `residual_window=0` bug
+that silently disabled compression; always log the *actual* compressed token count after
+the run.
 
 Concrete steps:
 
-1. Pick your target engine (vLLM, SGLang, llama.cpp, KVPress) — see
-   [INTEGRATIONS.md](INTEGRATIONS.md).
-2. Run [LongBench](https://github.com/THUDM/LongBench) with FP16 KV to establish a
-   baseline.
-3. Switch to `turboquant_3bit` (or our plugin's default config) and re-run.
-4. Expected delta on Llama-3.1-8B: **< 0.1 pts** on LongBench Avg, zero change on needle.
-5. If you see larger deltas, check:
-   - Is your outlier-channel detection actually being applied? (It's only applied when
-     `MixedPrecisionConfig.enable=True`.)
-   - Is `qjl_score_weight=1.0`? (Lower values trade bias for variance.)
-   - Is your head dim a power of 2? (Hadamard rotation pads if not; pad token can skew
-     norms.)
+1. Pick your target engine — see [INTEGRATIONS.md](INTEGRATIONS.md).
+2. Establish a baseline with **FP16/BF16 KV** *and* **FP8 KV** at your target context
+   length. (You need both — FP8 is what TQ has to beat, not just FP16.)
+3. Run two real evals at minimum:
+   - **Long-context retrieval:** [MRCR](https://github.com/openai/simple-evals/blob/main/mrcr_eval.py) (multi-round needle) at 32K, 64K, 128K. The Red Hat blog uses MRCR-8 and MRCR-16.
+   - **Reasoning:** AIME25 or LiveCodeBench-v6 Pass@1 over 32+ samples (these surface
+     reasoning degradation that retrieval evals miss).
+4. Switch to `turboquant_4bit_nc` (start here, not 3-bit) and re-run.
+5. Expected delta: **< 1 pt** vs FP8 on Llama-3-class, **5–15 pt** on Qwen-class without
+   asymmetric bit allocation. If you see worse, check:
+   - Are first/last 2 layers being skipped from compression?
+   - Are you using the `*_nc` (no-QJL) variant?
+   - Is your model in the head_dim=128 family? If head_dim ≥ 256, use [AmesianX/TurboQuant](https://github.com/AmesianX/TurboQuant), not llama.cpp's spiritbuun fork.
+   - Is `qjl_score_weight=0.0`? (Or for vLLM, are you on a `*_nc` dtype?)
+   - Is your head dim a power of 2? (Hadamard rotation pads if not; pad tokens skew norms.)
+6. If quality is still off and FP8 works fine — use FP8.
 
 ---
 
@@ -240,19 +395,38 @@ If you want to credit this open-source port specifically, you can link to the re
 
 ---
 
-## "Where do I find the viral takes / explainers?"
+## "Where do I find the most up-to-date evaluations and explainers?"
 
-Start here (sorted by how layperson-friendly they are):
+Start here (sorted by depth):
 
-1. **[LMCache Blog (Apr 15, 2026)](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/)**
-   — "in laymen's term" explainer, no math. Best starting point.
-2. **[Towards AI: Running a 35B Model Locally with TurboQuant (Apr 15, 2026)](https://pub.towardsai.net/running-a-35b-model-locally-with-turboquant-whats-actually-possible-right-now-1ac5327430b0)**
-   — hands-on consumer-GPU walkthrough.
-3. **[MarkTechPost: NVIDIA KVPress end-to-end guide (Apr 9, 2026)](https://www.marktechpost.com/2026/04/09/an-end-to-end-coding-guide-to-nvidia-kvpress-for-long-context-llm-inference-kv-cache-compression-and-memory-efficient-generation/)**
+**Definitive third-party evaluations:**
+
+1. **[Red Hat AI / vLLM: "A First Comprehensive Study of TurboQuant" (May 11, 2026)](https://blog.vllm.ai/2026/05/11/turboquant.html)**
+   — the rigorous evaluation. Read this before anything else.
+2. **[scos-lab/turboquant 8-model benchmark (May 16, 2026)](https://github.com/tonbistudio/turboquant-pytorch/issues/8)**
+   — establishes the K/V-norm-ratio predictor.
+
+**Layperson / explainer:**
+
+3. **[LMCache Blog (Apr 15, 2026)](https://blog.lmcache.ai/en/2026/04/15/what-is-turboquant-and-why-it-matters-for-llm-inference-in-laymens-term/)**
+   — "in laymen's terms" explainer of the algorithm. The framing is more enthusiastic
+   than the May 2026 data supports, but it's still the best layperson intro.
+4. **[TeqVolt deep-dive (May 14, 2026)](https://teqvolt.com/deep-dives/turboquant-google-6x-kv-cache-compression-3-bit-zero-loss)**
+   — algorithm walkthrough with up-to-date caveats.
+5. **[AI Intensify hype check (May 17, 2026)](https://ai-intensify.com/turboquant-is-compression-and-performance-worth-the-hype/)**
+   — three-model comparison against FP8.
+
+**Hands-on:**
+
+6. **[Towards AI: Running a 35B Model Locally with TurboQuant (Apr 15, 2026)](https://pub.towardsai.net/running-a-35b-model-locally-with-turboquant-whats-actually-possible-right-now-1ac5327430b0)**
+   — consumer-GPU walkthrough.
+7. **[MarkTechPost: NVIDIA KVPress end-to-end guide (Apr 9, 2026)](https://www.marktechpost.com/2026/04/09/an-end-to-end-coding-guide-to-nvidia-kvpress-for-long-context-llm-inference-kv-cache-compression-and-memory-efficient-generation/)**
    — how to stack KVPress eviction under a TurboQuant-style precision backend.
-4. **[ArXivIQ FlashAttention-4 analysis (Mar 13, 2026)](https://arxiviq.substack.com/p/flashattention-4-algorithm-and-kernel)**
-   — FA4 paper summary relevant to Blackwell quantized KV.
-5. **[The original paper (arXiv 2504.19874)](https://arxiv.org/abs/2504.19874)**
-   — 14 pages, math-heavy but worth it.
-6. **[ICLR 2026 poster (Apr 25, 2026 PDT)](https://iclr.cc/virtual/2026/poster/10006985)**
-   — meet the authors.
+
+**Primary sources:**
+
+8. **[The original paper (arXiv 2504.19874)](https://arxiv.org/abs/2504.19874)**
+   — 14 pages, math-heavy.
+9. **[Google Research blog (Mar 24, 2026)](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)**
+   — author-side framing.
+10. **[ICLR 2026 poster](https://iclr.cc/virtual/2026/poster/10006985)** — presented Apr 25, 2026.

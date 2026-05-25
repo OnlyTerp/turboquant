@@ -80,7 +80,63 @@ This avoids the approximation of using a single rotation with post-rotation vari
 
 ## QJL Score Weight
 
-The `compute_attention()` method defaults to `qjl_score_weight=1.0`, which produces the paper-correct **unbiased** inner product estimator (Theorem 2). Setting `qjl_score_weight < 1.0` trades bias for lower variance — this is a practical heuristic not present in the paper that can improve attention quality when the QJL variance is high relative to score differences.
+The `compute_attention()` method defaults to `qjl_score_weight=1.0`, which produces the
+paper-correct **unbiased** inner product estimator (Theorem 2). Setting
+`qjl_score_weight < 1.0` trades bias for lower variance.
+
+**May 2026 community consensus: set `qjl_score_weight=0.0` (i.e. disable QJL) at b ≤ 3.**
+
+Multiple independent reproductions show that the QJL residual stage hurts more than it
+helps at the bit widths people actually use:
+
+- [Red Hat AI evaluation](https://blog.vllm.ai/2026/05/11/turboquant.html): the `*_nc`
+  ("norm correction", QJL-free) variants strictly Pareto-dominate the QJL-augmented
+  variants on Llama-3.3-70B / Qwen3-30B-A3B / MiniMax-M2.7.
+- [tonbistudio V3 PyTorch port](https://github.com/tonbistudio/turboquant-pytorch):
+  +300% PPL on GPT-2 at b=3 with QJL on Keys, vs +7.6% with pure MSE. V3 ships pure-MSE
+  as the default.
+- [scos-lab 8-model benchmark](https://github.com/tonbistudio/turboquant-pytorch/issues/8):
+  pure MSE beats MSE+QJL on every one of 8 models tested.
+
+**Why?** The QJL estimator is unbiased but high-variance. Softmax × exp() amplifies
+variance multiplicatively, and softmax over long context concentrates that amplification
+on a small number of highly-attended tokens, breaking attention. The bias-variance
+trade-off doesn't favor QJL until b ≈ 5 — at which point you might as well use FP8 KV.
+
+This repo's reference path keeps QJL on for backward compatibility with the paper's
+algorithm; production paths should turn it off. The vLLM upstream `*_nc` dtypes
+(`turboquant_4bit_nc`, `turboquant_3bit_nc`, `turboquant_k3v4_nc`) bake this in.
+
+## Layer Skipping (Red Hat / scos-lab)
+
+The first and last 2 layers of a transformer carry disproportionately important KV
+representations. The Red Hat evaluation showed that quantizing them costs more accuracy
+than the bits they save, so the production-grade `*_nc` paths skip them.
+
+This repo's reference implementation does not implement per-layer skipping — it's a
+plumbing concern at the engine integration layer (vLLM, our plugin, etc.). If you're
+building an integration, replicate this:
+
+```python
+SKIP_LAYERS = set(list(range(2)) + list(range(num_layers - 2, num_layers)))
+for layer_idx in range(num_layers):
+    if layer_idx in SKIP_LAYERS:
+        # Keep BF16 / FP8 KV for this layer
+        continue
+    # Apply TurboQuant compression for the rest
+```
+
+Per-layer outlier-channel statistics (from
+[scos-lab](https://github.com/scos-lab/turboquant)):
+
+- Layer 0: ~20% outliers
+- Layers 1–2: ~12%
+- Middle layers: 4–6%
+- Last 2 layers: ~10–15%
+
+A fixed `top_k=32` outlier allocation wastes bits in the middle and under-allocates
+layer 0. Use `MixedPrecisionConfig(mode="dynamic", threshold_factor=3.0)` to enable
+the per-layer dynamic threshold instead.
 
 ## Backward Compatibility
 
