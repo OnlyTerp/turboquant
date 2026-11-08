@@ -339,9 +339,9 @@ class TurboQuantKVManager:
         score (PolarQuant dot product + QJL correction) for each stored token.
         """
         try:
-            from cache import turboquant_decode_single
+            from cache import polarquant_decode
         except ImportError:
-            from .cache import turboquant_decode_single
+            from .cache import polarquant_decode
 
         d = self.config.head_dim
         tc = self._tq_cache
@@ -352,7 +352,7 @@ class TurboQuantKVManager:
         cache_entries = tc.cache[layer_idx][kv_head_idx]
         scores = []
         for kc, _vc in cache_entries:
-            k_hat = turboquant_decode_single(kc)
+            k_hat = polarquant_decode(kc.pq)
             score_pq = torch.dot(q_vec, k_hat.squeeze(0))
             signs_f = kc.qjl.signs.squeeze(0).float() * 2 - 1
             qjl_ip = torch.dot(q_proj, signs_f)
@@ -369,18 +369,17 @@ class TurboQuantKVManager:
     ) -> torch.Tensor:
         """Weighted sum of decoded compressed values."""
         try:
-            from cache import turboquant_decode_single
+            from cache import polarquant_decode
         except ImportError:
-            from .cache import turboquant_decode_single
+            from .cache import polarquant_decode
 
         d = self.config.head_dim
         tc = self._tq_cache
         cache_entries = tc.cache[layer_idx][kv_head_idx]
         output = torch.zeros(d, device=self.config.torch_device)
         for i, (_kc, vc) in enumerate(cache_entries):
-            if weights[i].abs() > 1e-8:
-                v_hat = turboquant_decode_single(vc)
-                output = output + weights[i] * v_hat.squeeze(0)
+            v_hat = polarquant_decode(vc.pq)
+            output = output + weights[i] * v_hat.squeeze(0)
         return output
 
     @property
