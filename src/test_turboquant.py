@@ -36,6 +36,8 @@ from cache import (
     turboquant_decode_single,
     turboquant_encode_internal,
 )
+from vllm_integration import TurboQuantConfig as VllmTurboQuantConfig
+from vllm_integration import TurboQuantKVManager
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +49,59 @@ D = 128
 SEED = 42
 BATCH = 8
 TEST_B_MSE = 2
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"))],
+)
+@pytest.mark.parametrize("compressed_tokens", [1, 2])
+def test_mixed_cache_ignores_raw_token_with_negligible_weight(device, compressed_tokens):
+    generator = torch.Generator().manual_seed(731)
+    keys = torch.randn(compressed_tokens, 64, generator=generator).to(device)
+    values = torch.randn(compressed_tokens, 64, generator=generator).to(device)
+    query = torch.randn(64, generator=generator).to(device)
+    config = VllmTurboQuantConfig(
+        num_layers=1, num_heads=1, num_kv_heads=1, head_dim=64,
+        flush_interval=compressed_tokens + 1, device=device,
+    )
+    manager = TurboQuantKVManager(config)
+    manager.store_batch(0, 0, keys, values)
+    manager.flush(0, 0)
+    compressed_only = manager.fetch(0, 0, query)
+
+    # This token's attention weight underflows to zero, so adding it must not
+    # change how the already compressed tokens are scored or decoded.
+    manager.store(0, 0, -1000 * query, torch.ones_like(query))
+    mixed = manager.fetch(0, 0, query)
+
+    torch.testing.assert_close(mixed, compressed_only, rtol=1e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"))],
+)
+def test_mixed_cache_keeps_small_compressed_weights(device):
+    generator = torch.Generator().manual_seed(731)
+    keys = torch.randn(2, 64, generator=generator).to(device)
+    values = torch.zeros_like(keys)
+    values[0] = 5000
+    query = -1.2 * (keys[0] - keys[1])
+    config = VllmTurboQuantConfig(
+        num_layers=1, num_heads=1, num_kv_heads=1, head_dim=64,
+        flush_interval=3, device=device,
+    )
+    manager = TurboQuantKVManager(config)
+    manager.store_batch(0, 0, keys, values)
+    manager.flush(0, 0)
+    compressed_only = manager.fetch(0, 0, query)
+
+    manager.store(0, 0, -1000 * query, torch.zeros_like(query))
+    mixed = manager.fetch(0, 0, query)
+
+    assert compressed_only.norm().item() > 1e-6
+    torch.testing.assert_close(mixed, compressed_only, rtol=1e-5, atol=1e-9)
 
 
 @pytest.fixture
